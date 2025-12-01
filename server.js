@@ -28,7 +28,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || "supersecretbaby";
 
 // -------- FRONTEND ORIGINS (LOCAL + RENDER) --------
 const FRONTEND_ORIGINS = [
-  "https://warm-biscotti-09de3d.netlify.app",
+  "https://radiology-system.netlify.app",
   "http://localhost:5500",
   "http://127.0.0.1:5500"
 ];
