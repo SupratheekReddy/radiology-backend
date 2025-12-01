@@ -53,12 +53,13 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false,
-      sameSite: "lax",
+      secure: true,       // REQUIRED for HTTPS (Render)
+      sameSite: "none",   // REQUIRED for cross-site cookies (Netlify -> Render)
       maxAge: 1000 * 60 * 60 * 8,
     },
   })
 );
+
 
 // --------------- MONGO CONNECT ---------------
 mongoose
