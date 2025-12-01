@@ -38,13 +38,14 @@ const FRONTEND_ORIGINS = [
 app.use(
   cors({
     origin: [
-      "https://radiology-system.netlify.app",  // your LIVE frontend
-      "http://localhost:5500"                 // local testing
+      "https://radiology-system.netlify.app",
+      "http://localhost:5500"
     ],
     credentials: true,
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST"]
   })
 );
+
 
 
 app.use(express.json());
@@ -57,12 +58,13 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,        // 🔥 required for HTTPS
-      sameSite: "none",    // 🔥 required for cross-site cookies
-      maxAge: 1000 * 60 * 60 * 8,
-    },
+      secure: true,     // MUST BE TRUE on Render
+      sameSite: "none", // MUST BE NONE for cross-domain
+      maxAge: 1000 * 60 * 60 * 8
+    }
   })
 );
+
 
 
 
