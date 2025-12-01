@@ -37,11 +37,15 @@ const FRONTEND_ORIGINS = [
 // --------------- CORS ----------------
 app.use(
   cors({
-    origin: FRONTEND_ORIGINS,
+    origin: [
+      "https://radiology-system.netlify.app",  // your LIVE frontend
+      "http://localhost:5500"                 // local testing
+    ],
     credentials: true,
     methods: ["GET", "POST"],
   })
 );
+
 
 app.use(express.json());
 
@@ -53,12 +57,13 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,       // REQUIRED for HTTPS (Render)
-      sameSite: "none",   // REQUIRED for cross-site cookies (Netlify -> Render)
+      secure: true,        // 🔥 required for HTTPS
+      sameSite: "none",    // 🔥 required for cross-site cookies
       maxAge: 1000 * 60 * 60 * 8,
     },
   })
 );
+
 
 
 // --------------- MONGO CONNECT ---------------
