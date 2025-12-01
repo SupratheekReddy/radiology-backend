@@ -23,6 +23,7 @@ const MONGO_URI =
   process.env.MONGO_URI ||
   "mongodb+srv://onlyfreecsgo1_db_user:bDbtPGx2EFqPjFNw@cluster0.vybpqwq.mongodb.net/radiology?retryWrites=true&w=majority&appName=Cluster0";
 
+
 const SESSION_SECRET = process.env.SESSION_SECRET || "supersecretbaby";
 
 // -------- FRONTEND ORIGINS (LOCAL + RENDER) --------
