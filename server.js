@@ -16,6 +16,7 @@ const { Server } = require("socket.io");
 
 // ---------------- SETUP ----------------
 const app = express();
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 5000;
 
 // Your MongoDB Atlas URL (already added)
@@ -39,12 +40,16 @@ app.use(
   cors({
     origin: [
       "https://radiology-system.netlify.app",
-      "http://localhost:5500"
+      "https://*.netlify.app",
+      "http://localhost:5500",
+      "http://127.0.0.1:5500"
     ],
     credentials: true,
-    methods: ["GET", "POST"]
+    allowedHeaders: ["Content-Type", "Authorization"],
+    methods: "GET,POST"
   })
 );
+
 
 
 
@@ -58,12 +63,13 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,     // MUST BE TRUE on Render
-      sameSite: "none", // MUST BE NONE for cross-domain
+      secure: true,      // Render requires HTTPS cookies
+      sameSite: "none",  // Cross-domain cookie
       maxAge: 1000 * 60 * 60 * 8
     }
   })
 );
+
 
 
 
@@ -666,12 +672,18 @@ app.get("/patient/cases/:username", requireLogin, requireRole("patient"), async 
 
 const httpServer = http.createServer(app);
 
-io = new Server(httpServer, {
+const io = new Server(httpServer, {
   cors: {
-    origin: "*",
-    credentials: false
+    origin: [
+      "https://radiology-system.netlify.app",
+      "https://*.netlify.app",
+      "http://localhost:5500",
+      "http://127.0.0.1:5500"
+    ],
+    credentials: true
   }
 });
+
 
 io.on("connection", (socket) => {
   console.log("🔥 User connected:", socket.id);
