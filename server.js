@@ -18,8 +18,6 @@ const { Server } = require("socket.io");
 const cloudinary = require("cloudinary").v2;
 
 // Models
-// Note: We import Account but assign it to 'User' variable because 
-// the logic below uses 'User.findOne', etc.
 const User = require("./models/Account"); 
 const Case = require("./models/Case");
 
@@ -36,7 +34,7 @@ const FRONTEND_ORIGINS = [
   "https://*.netlify.app",
   "http://localhost:5500",
   "http://127.0.0.1:5500",
-  "http://localhost:3000" // Added common React port just in case
+  "http://localhost:3000"
 ];
 
 // Socket.io Setup
@@ -48,7 +46,6 @@ const io = new Server(server, {
   }
 });
 
-// Make io accessible globally or via req (optional, but good for separation)
 app.set("io", io);
 
 io.on("connection", (socket) => {
@@ -67,26 +64,28 @@ mongoose.connect(process.env.MONGO_URI, {
 })
 .then(() => console.log("✅ MongoDB Connected"))
 .catch((err) => console.error("❌ MongoDB Error:", err));
+
 // =========================
 // RESET ADMIN (OPTIONAL)
 // =========================
 (async () => {
-  console.log("⚠ Resetting admin account...");
-
-  await User.deleteMany({ role: "admin" });
-
-  await User.create({
-    name: "System Admin",
-    email: "admin@system.com",
-    username: "admin",
-    password: "admin",
-    role: "admin"
-  });
-
-  console.log("🟢 Admin reset complete! (admin/admin)");
+  try {
+    const adminExists = await User.findOne({ role: "admin" });
+    if (!adminExists) {
+        console.log("⚠ Creating default admin account...");
+        await User.create({
+            name: "System Admin",
+            email: "admin@system.com",
+            username: "admin",
+            password: "admin",
+            role: "admin"
+        });
+        console.log("🟢 Admin created (admin/admin)");
+    }
+  } catch (err) {
+    console.error("Admin check failed:", err.message);
+  }
 })();
-
-
 
 // =========================
 // MIDDLEWARE
@@ -103,7 +102,7 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === "production", // true in production (https)
+      secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 1000 * 60 * 60 * 24, // 1 day
     },
@@ -138,17 +137,26 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Multer for Cloudinary (Memory Storage)
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 // =========================
-// GOOGLE GEMINI — AI HELPER
+// GOOGLE GEMINI — AI HELPER (FIXED)
 // =========================
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 async function analyzeImageURL(imageUrl) {
   try {
+    // 1. Download the image from Cloudinary (or any URL)
+    const imageResp = await axios.get(imageUrl, { responseType: "arraybuffer" });
+    
+    // 2. Convert to Base64
+    const base64Image = Buffer.from(imageResp.data).toString("base64");
+    
+    // 3. Simple MIME detection
+    const mimeType = imageUrl.endsWith(".png") ? "image/png" : "image/jpeg";
+
+    // 4. Send to Gemini using inlineData
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -156,7 +164,12 @@ async function analyzeImageURL(imageUrl) {
           {
             parts: [
               { text: "Analyze this medical scan and provide a detailed radiology report. Include findings, likely diagnosis, and severity." },
-              { fileData: { mimeType: "image/jpeg", fileUri: imageUrl } }
+              {
+                inlineData: {
+                  mimeType: mimeType,
+                  data: base64Image
+                }
+              }
             ]
           }
         ]
@@ -169,8 +182,8 @@ async function analyzeImageURL(imageUrl) {
     );
 
   } catch (err) {
-    console.error("Gemini error:", err.response?.data || err.message);
-    return "Gemini analysis failed. Ensure API key is valid and image is accessible.";
+    console.error("Gemini error details:", err.response?.data || err.message);
+    return "Gemini analysis failed. Please check server logs.";
   }
 }
 
@@ -185,10 +198,9 @@ app.post("/auth/login", async (req, res) => {
   }
 
   try {
-    // In production, use bcrypt.compare here. 
-    // Assuming plain text for now based on your 'admin/doctor' route logic.
     const user = await User.findOne({ username, role });
     
+    // Simple password check (Hash in production!)
     if (!user || user.password !== password) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
@@ -223,13 +235,12 @@ app.get("/auth/me", (req, res) => {
 // ROUTES: ADMIN
 // =========================
 
-// ---- Add Doctor ----
 app.post("/admin/doctor", async (req, res) => {
-  const { name, email, username } = req.body;
+  const { name, email, username, password } = req.body; // Added password extraction
   try {
     const doc = new User({
       name, email, username,
-      password: "doctor123", // Ideally hash this
+      password: password || "doctor123",
       role: "doctor",
     });
     await doc.save();
@@ -239,7 +250,6 @@ app.post("/admin/doctor", async (req, res) => {
   }
 });
 
-// ---- Add Technician ----
 app.post("/admin/technician", async (req, res) => {
   const { name, email, username, password } = req.body;
   try {
@@ -253,10 +263,9 @@ app.post("/admin/technician", async (req, res) => {
     res.status(400).json({ success: false, message: err.message });
   }
 });
-// ---- Add Radiologist ----
+
 app.post("/admin/radiologist", async (req, res) => {
   const { name, email, username, password } = req.body;
-
   try {
     const radio = new User({
       name, email, username, password,
@@ -269,8 +278,6 @@ app.post("/admin/radiologist", async (req, res) => {
   }
 });
 
-
-// ---- Add Patient ----
 app.post("/admin/patient", async (req, res) => {
   const { name, email, username, password, basePriority } = req.body;
   try {
@@ -286,7 +293,6 @@ app.post("/admin/patient", async (req, res) => {
   }
 });
 
-// ---- Get Dropdown Lists ----
 app.get("/admin/lists", async (req, res) => {
   try {
     const patients = await User.find({ role: "patient" });
@@ -298,7 +304,6 @@ app.get("/admin/lists", async (req, res) => {
   }
 });
 
-// ---- Schedule New Case ----
 app.post("/admin/case", async (req, res) => {
   try {
     const newCase = new Case(req.body);
@@ -306,11 +311,11 @@ app.post("/admin/case", async (req, res) => {
     io.emit("case-created");
     res.json({ success: true });
   } catch (err) {
+    console.error("Schedule error:", err);
     res.status(400).json({ success: false, message: err.message });
   }
 });
 
-// ---- Get All Cases (Admin) ----
 app.get("/admin/cases", async (req, res) => {
   try {
     const cases = await Case.find()
@@ -324,101 +329,22 @@ app.get("/admin/cases", async (req, res) => {
 });
 
 // =========================
-// ROUTES: DOCTOR
+// ROUTES: TECHNICIAN
 // =========================
 
-app.get("/doctor/cases/:doctorId", async (req, res) => {
-  try {
-    const cases = await Case.find({ doctor: req.params.doctorId })
-      .populate("patient")
-      .populate("technician");
-    res.json({ cases });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-app.post("/doctor/diagnosis/:caseId", async (req, res) => {
-  const { diagnosis, severity } = req.body;
-  try {
-    const updated = await Case.findByIdAndUpdate(
-      req.params.caseId,
-      { diagnosis, severity, status: "diagnosed" },
-      { new: true }
-    );
-    io.emit("case-updated");
-    res.json({ success: true, case: updated });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
-});
-
-// =========================
-// ROUTES: PATIENT
-// =========================
-
-app.get("/patient/cases/:patientId", async (req, res) => {
-  try {
-    const cases = await Case.find({ patient: req.params.patientId })
-      .populate("doctor")
-      .populate("technician");
-    res.json({ cases });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// =========================
-// ROUTES: SHARED / GENERIC
-// =========================
-
-app.get("/case/:id", async (req, res) => {
-  try {
-    const singleCase = await Case.findById(req.params.id)
-      .populate("patient")
-      .populate("doctor")
-      .populate("technician");
-    res.json({ case: singleCase });
-  } catch (err) {
-    res.status(404).json({ message: "Case not found" });
-  }
-});
-
-app.post("/case/status/:id", async (req, res) => {
-  const { status } = req.body;
-  try {
-    const updated = await Case.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true }
-    );
-    io.emit("case-updated");
-    res.json({ success: true, case: updated });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
-});
-
-// =========================
-// ADD THIS TO server.js (Under ROUTES: TECHNICIAN)
-// =========================
-
-// ---- Get All Cases for Technician ----
+// Get All Cases for Technician
 app.get("/technician/cases", requireLogin, requireRole("technician"), async (req, res) => {
   try {
-    // Return all cases so tech can see what needs scanning
-    // Optionally filter by { status: "pending" } if you only want pending ones
     const cases = await Case.find()
       .populate("patient", "name")
       .populate("doctor", "name");
-    
     res.json({ cases });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Upload to Cloudinary via Memory Stream
+// Upload to Cloudinary
 app.post(
   "/tech/upload-cloud/:caseId",
   requireLogin,
@@ -426,11 +352,9 @@ app.post(
   upload.array("images", 10),
   async (req, res) => {
     try {
-      // Find case by _id or custom caseId field. Assuming _id for Mongoose safety, 
-      // but logic below attempts custom caseId first.
+      // Find case by custom caseId OR _id
       let c = await Case.findOne({ caseId: req.params.caseId });
       if (!c) {
-         // Fallback: try finding by MongoDB _id
          try { c = await Case.findById(req.params.caseId); } catch(e){}
       }
       
@@ -439,7 +363,7 @@ app.post(
       if (!req.files || req.files.length === 0)
         return res.status(400).json({ success: false, message: "No files uploaded" });
 
-      // Process uploads
+      // Upload to Cloudinary
       const uploadPromises = req.files.map((file) => {
         return new Promise((resolve, reject) => {
           const uploadStream = cloudinary.uploader.upload_stream(
@@ -457,6 +381,7 @@ app.post(
 
       // Append images
       c.images = [...(c.images || []), ...uploadedUrls];
+      c.status = "Scanned"; // Update status
       await c.save();
 
       io.emit("images-updated", { caseId: c._id });
@@ -470,10 +395,9 @@ app.post(
 );
 
 // =========================
-// ROUTES: RADIOLOGIST (Notes + AI)
+// ROUTES: RADIOLOGIST (AI)
 // =========================
 
-// Save Radiologist Notes
 app.post("/radio/notes/:caseId", requireLogin, requireRole("radiologist"), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
@@ -483,29 +407,36 @@ app.post("/radio/notes/:caseId", requireLogin, requireRole("radiologist"), async
     await c.save();
 
     io.emit("radiologist-updated", { caseId: c._id });
-
-    return res.json({ success: true });
+    res.json({ success: true });
   } catch (err) {
     console.error("Radio notes error:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// AI Analysis with Gemini
+// Trigger AI Analysis
 app.post("/radio/ai-analyze/:caseId", requireLogin, requireRole("radiologist"), async (req, res) => {
   try {
-    const c = await Case.findById(req.params.caseId);
+    // 1. Find Case
+    // Try by _id first, then by caseId if strictly needed, usually frontend sends _id for actions
+    let c = await Case.findById(req.params.caseId);
+    if (!c) c = await Case.findOne({ caseId: req.params.caseId });
+
     if (!c) return res.status(404).json({ success: false, message: "Case not found" });
 
     if (!c.images || c.images.length === 0)
       return res.status(400).json({ success: false, message: "No images to analyze" });
 
-    const imageUrl = c.images[0]; // Analyzing the first image
+    // 2. Analyze First Image
+    const imageUrl = c.images[0]; 
+    console.log(`Analyzing image for Case ${c.caseId}: ${imageUrl}`);
 
     const aiReport = await analyzeImageURL(imageUrl);
 
-    // Append AI report to existing notes
-    c.radiologistNotes = `${c.radiologistNotes || ""}\n\n--- AI ANALYSIS REPORT (${new Date().toLocaleDateString()}) ---\n${aiReport}`;
+    // 3. Save Report
+    const separator = `\n\n--- AI ANALYSIS REPORT (${new Date().toLocaleDateString()}) ---\n`;
+    c.radiologistNotes = (c.radiologistNotes || "") + separator + aiReport;
+    
     await c.save();
 
     io.emit("ai-report-generated", { caseId: c._id });
@@ -518,23 +449,54 @@ app.post("/radio/ai-analyze/:caseId", requireLogin, requireRole("radiologist"), 
 });
 
 // =========================
-// ERROR HANDLING & START
+// ROUTES: SHARED/GENERIC
+// =========================
+
+app.get("/doctor/cases/:doctorId", async (req, res) => {
+  try {
+    const cases = await Case.find({ doctor: req.params.doctorId })
+      .populate("patient").populate("technician");
+    res.json({ cases });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/patient/cases/:patientId", async (req, res) => {
+  try {
+    const cases = await Case.find({ patient: req.params.patientId })
+      .populate("doctor").populate("technician");
+    res.json({ cases });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.get("/case/:id", async (req, res) => {
+  try {
+    const singleCase = await Case.findById(req.params.id)
+      .populate("patient").populate("doctor").populate("technician");
+    res.json({ case: singleCase });
+  } catch (err) {
+    res.status(404).json({ message: "Case not found" });
+  }
+});
+
+// =========================
+// START SERVER
 // =========================
 
 app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
 
-// 404 Handler
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found" });
 });
 
-// Global Error Handler
 app.use((err, req, res, next) => {
   console.error("UNHANDLED ERROR:", err);
   res.status(500).json({ success: false, message: "Internal server error" });
 });
 
-// Start Server
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log("🌍 Environment:", process.env.NODE_ENV || "development");
