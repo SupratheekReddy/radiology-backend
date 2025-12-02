@@ -400,8 +400,23 @@ app.post("/case/status/:id", async (req, res) => {
 });
 
 // =========================
-// ROUTES: TECHNICIAN (Uploads)
+// ADD THIS TO server.js (Under ROUTES: TECHNICIAN)
 // =========================
+
+// ---- Get All Cases for Technician ----
+app.get("/technician/cases", requireLogin, requireRole("technician"), async (req, res) => {
+  try {
+    // Return all cases so tech can see what needs scanning
+    // Optionally filter by { status: "pending" } if you only want pending ones
+    const cases = await Case.find()
+      .populate("patient", "name")
+      .populate("doctor", "name");
+    
+    res.json({ cases });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // Upload to Cloudinary via Memory Stream
 app.post(
