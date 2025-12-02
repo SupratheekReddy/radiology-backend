@@ -253,6 +253,22 @@ app.post("/admin/technician", async (req, res) => {
     res.status(400).json({ success: false, message: err.message });
   }
 });
+// ---- Add Radiologist ----
+app.post("/admin/radiologist", async (req, res) => {
+  const { name, email, username, password } = req.body;
+
+  try {
+    const radio = new User({
+      name, email, username, password,
+      role: "radiologist"
+    });
+    await radio.save();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+});
+
 
 // ---- Add Patient ----
 app.post("/admin/patient", async (req, res) => {
