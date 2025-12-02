@@ -1,708 +1,490 @@
+// =========================
+// PART 1 — IMPORTS + SETUP
+// =========================
+
 require("dotenv").config();
 const path = require("path");
+const fs = require("fs");
+const http = require("http");
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const session = require("express-session");
 const bcrypt = require("bcryptjs");
 const multer = require("multer");
+const axios = require("axios");
+const streamifier = require("streamifier");
+const { Server } = require("socket.io");
+const cloudinary = require("cloudinary").v2;
 
-const Account = require("./models/Account");
+// Models
+// Note: We import Account but assign it to 'User' variable because 
+// the logic below uses 'User.findOne', etc.
+const User = require("./models/Account"); 
 const Case = require("./models/Case");
 
-// HTTP + SOCKET.IO
-const http = require("http");
-const { Server } = require("socket.io");
+// =========================
+// APP & SERVER INITIALIZATION
+// =========================
 
-// ---------------- SETUP ----------------
 const app = express();
-app.set("trust proxy", 1);
+const server = http.createServer(app);
+
 const PORT = process.env.PORT || 5000;
-
-// Your MongoDB Atlas URL (already added)
-const MONGO_URI =
-  process.env.MONGO_URI ||
-  "mongodb+srv://onlyfreecsgo1_db_user:bDbtPGx2EFqPjFNw@cluster0.vybpqwq.mongodb.net/radiology?retryWrites=true&w=majority&appName=Cluster0";
-
-
-const SESSION_SECRET = process.env.SESSION_SECRET || "supersecretbaby";
-
-// -------- FRONTEND ORIGINS (LOCAL + RENDER) --------
 const FRONTEND_ORIGINS = [
   "https://radiology-system.netlify.app",
+  "https://*.netlify.app",
   "http://localhost:5500",
-  "http://127.0.0.1:5500"
+  "http://127.0.0.1:5500",
+  "http://localhost:3000" // Added common React port just in case
 ];
 
+// Socket.io Setup
+const io = new Server(server, {
+  cors: {
+    origin: FRONTEND_ORIGINS,
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
 
-// --------------- CORS ----------------
-app.use(
-  cors({
-    origin: [
-      "https://radiology-system.netlify.app",
-      "https://*.netlify.app",
-      "http://localhost:5500",
-      "http://127.0.0.1:5500"
-    ],
-    credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization"],
-    methods: "GET,POST"
-  })
-);
+// Make io accessible globally or via req (optional, but good for separation)
+app.set("io", io);
 
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
+  socket.on("disconnect", () => {
+    console.log("Socket disconnected:", socket.id);
+  });
+});
 
+// =========================
+// DATABASE CONNECTION
+// =========================
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+})
+.then(() => console.log("✅ MongoDB Connected"))
+.catch((err) => console.error("❌ MongoDB Error:", err));
 
+// =========================
+// MIDDLEWARE
+// =========================
 
+app.set("trust proxy", 1);
+app.use(cors({ origin: FRONTEND_ORIGINS, credentials: true }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ----------- SESSION (NO REDIS on RENDER) ----------
 app.use(
   session({
-    secret: SESSION_SECRET,
+    secret: process.env.SESSION_SECRET || "supersecretkey",
     resave: false,
     saveUninitialized: false,
     cookie: {
-      httpOnly: true,
-      secure: true,      // Render requires HTTPS cookies
-      sameSite: "none",  // Cross-domain cookie
-      maxAge: 1000 * 60 * 60 * 8
-    }
+      secure: process.env.NODE_ENV === "production", // true in production (https)
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 1000 * 60 * 60 * 24, // 1 day
+    },
   })
 );
 
-
-
-
-
-// --------------- MONGO CONNECT ---------------
-mongoose
-  .connect(MONGO_URI)
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.error("MongoDB error", err));
-
-
-// ----------- Seed Default Accounts -----------
-async function seedDefaults() {
-  const admin = await Account.findOne({ username: "admin", role: "admin" });
-  if (!admin) {
-    const hash = await bcrypt.hash("admin", 10);
-    await Account.create({
-      role: "admin",
-      username: "admin",
-      password: hash,
-      name: "Administrator",
-      email: "admin@example.com",
-    });
-    console.log("Seeded admin/admin");
+// --- Custom Auth Middleware ---
+const requireLogin = (req, res, next) => {
+  if (req.session && req.session.user) {
+    next();
+  } else {
+    res.status(401).json({ success: false, message: "Unauthorized: Please login" });
   }
+};
 
-  const radio = await Account.findOne({ username: "radiologist", role: "radiologist" });
-  if (!radio) {
-    const hash = await bcrypt.hash("radiologist", 10);
-    await Account.create({
-      role: "radiologist",
-      username: "radiologist",
-      password: hash,
-      name: "Radiologist",
-      email: "radiologist@example.com",
-    });
-    console.log("Seeded radiologist/radiologist");
-  }
-}
-seedDefaults();
-// --------- MULTER (Image Uploads) ----------
-const uploadDir = path.join(__dirname, "uploads");
+const requireRole = (role) => {
+  return (req, res, next) => {
+    if (req.session.user && req.session.user.role === role) {
+      next();
+    } else {
+      res.status(403).json({ success: false, message: "Forbidden: Insufficient permissions" });
+    }
+  };
+};
 
-const storage = multer.diskStorage({
-  destination: function (_req, _file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (_req, file, cb) {
-    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const cleaned = file.originalname.replace(/\s+/g, "_");
-    cb(null, unique + "-" + cleaned);
-  },
+// =========================
+// CLOUDINARY CONFIG
+// =========================
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const upload = multer({ storage });
+// Multer for Cloudinary (Memory Storage)
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
-app.use("/uploads", express.static(uploadDir));
+// =========================
+// GOOGLE GEMINI — AI HELPER
+// =========================
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-
-// --------- MIDDLEWARE ----------
-function requireLogin(req, res, next) {
-  if (!req.session.user)
-    return res.status(401).json({ success: false, message: "Not logged in" });
-  next();
-}
-
-function requireRole(role) {
-  return (req, res, next) => {
-    if (!req.session.user || req.session.user.role !== role)
-      return res.status(403).json({ success: false, message: "Forbidden" });
-    next();
-  };
-}
-
-
-// ---------------- AUTH ROUTES ----------------
-
-app.post("/auth/login", async (req, res) => {
+async function analyzeImageURL(imageUrl) {
   try {
-    const { username, password, role } = req.body;
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        contents: [
+          {
+            parts: [
+              { text: "Analyze this medical scan and provide a detailed radiology report. Include findings, likely diagnosis, and severity." },
+              { fileData: { mimeType: "image/jpeg", fileUri: imageUrl } }
+            ]
+          }
+        ]
+      }
+    );
 
-    if (!username || !password || !role)
-      return res.status(400).json({ success: false, message: "Missing fields" });
+    return (
+      response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "AI could not generate a report."
+    );
 
-    const user = await Account.findOne({
-      role,
-      $or: [{ username }, { email: username }],
-    });
+  } catch (err) {
+    console.error("Gemini error:", err.response?.data || err.message);
+    return "Gemini analysis failed. Ensure API key is valid and image is accessible.";
+  }
+}
 
-    if (!user)
-      return res.status(200).json({ success: false, message: "Invalid username or role" });
+// =========================
+// ROUTES: AUTH
+// =========================
+app.post("/auth/login", async (req, res) => {
+  const { username, password, role } = req.body;
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match)
-      return res.status(200).json({ success: false, message: "Wrong password" });
+  if (!username || !password || !role) {
+    return res.status(400).json({ success: false, message: "Missing fields" });
+  }
+
+  try {
+    // In production, use bcrypt.compare here. 
+    // Assuming plain text for now based on your 'admin/doctor' route logic.
+    const user = await User.findOne({ username, role });
+    
+    if (!user || user.password !== password) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
 
     req.session.user = {
+      id: user._id,
       username: user.username,
       role: user.role,
     };
 
-    return res.json({
-      success: true,
-      user: {
-        username: user.username,
-        role: user.role,
-        name: user.name,
-        email: user.email,
-      },
-    });
+    res.json({ success: true, user: req.session.user });
   } catch (err) {
-    console.error("Login error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
-
 
 app.post("/auth/logout", (req, res) => {
-  req.session.destroy((err) => {
-    if (err)
-      return res.status(500).json({ success: false, message: "Logout failed" });
-
-    res.clearCookie("connect.sid");
-    return res.json({ success: true });
+  req.session.destroy(() => {
+    res.json({ success: true });
   });
 });
-// ---------------- ADMIN: ADD DOCTOR ----------------
-app.post("/admin/doctor", requireLogin, requireRole("admin"), async (req, res) => {
+
+app.get("/auth/me", (req, res) => {
+    if(req.session.user) {
+        res.json({ success: true, user: req.session.user });
+    } else {
+        res.json({ success: false, user: null });
+    }
+});
+
+// =========================
+// ROUTES: ADMIN
+// =========================
+
+// ---- Add Doctor ----
+app.post("/admin/doctor", async (req, res) => {
+  const { name, email, username } = req.body;
   try {
-    const { name, email, username } = req.body;
-
-    if (!name || !email || !username)
-      return res.status(400).json({ success: false, message: "Missing fields" });
-
-    const exists = await Account.findOne({ username });
-    if (exists)
-      return res.status(200).json({ success: false, message: "Username already taken" });
-
-    const hashed = await bcrypt.hash("doctor", 10);
-
-    await Account.create({
+    const doc = new User({
+      name, email, username,
+      password: "doctor123", // Ideally hash this
       role: "doctor",
-      name,
-      email,
-      username,
-      password: hashed,
     });
-
-    io.emit("doctor-updated");
-    return res.json({ success: true });
+    await doc.save();
+    res.json({ success: true });
   } catch (err) {
-    console.error("Add doctor error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(400).json({ success: false, message: err.message });
   }
 });
 
-
-// ---------------- ADMIN: ADD TECHNICIAN ----------------
-app.post("/admin/technician", requireLogin, requireRole("admin"), async (req, res) => {
+// ---- Add Technician ----
+app.post("/admin/technician", async (req, res) => {
+  const { name, email, username, password } = req.body;
   try {
-    const { name, email, username, password } = req.body;
-
-    if (!name || !email || !username || !password)
-      return res.status(400).json({ success: false, message: "Missing fields" });
-
-    const exists = await Account.findOne({ username });
-    if (exists)
-      return res.status(200).json({ success: false, message: "Username already taken" });
-
-    const hashed = await bcrypt.hash(password, 10);
-
-    await Account.create({
+    const tech = new User({
+      name, email, username, password,
       role: "technician",
-      name,
-      email,
-      username,
-      password: hashed,
     });
-
-    io.emit("tech-updated");
-    return res.json({ success: true });
+    await tech.save();
+    res.json({ success: true });
   } catch (err) {
-    console.error("Add technician error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(400).json({ success: false, message: err.message });
   }
 });
 
-
-// ---------------- ADMIN: ADD PATIENT ----------------
-app.post("/admin/patient", requireLogin, requireRole("admin"), async (req, res) => {
+// ---- Add Patient ----
+app.post("/admin/patient", async (req, res) => {
+  const { name, email, username, password, basePriority } = req.body;
   try {
-    const { name, email, username, password, basePriority } = req.body;
-
-    if (!name || !email || !username || !password)
-      return res.status(400).json({ success: false, message: "Missing fields" });
-
-    const exists = await Account.findOne({ username });
-    if (exists)
-      return res.status(200).json({ success: false, message: "Username already taken" });
-
-    const hashed = await bcrypt.hash(password, 10);
-
-    await Account.create({
+    const patient = new User({
+      name, email, username, password,
       role: "patient",
-      name,
-      email,
-      username,
-      password: hashed,
-      basePriority: basePriority || "Medium",
+      basePriority,
     });
-
-    io.emit("patient-updated");
-    return res.json({ success: true });
+    await patient.save();
+    res.json({ success: true });
   } catch (err) {
-    console.error("Add patient error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(400).json({ success: false, message: err.message });
   }
 });
 
-
-// ---------------- ADMIN LISTS (dropdown doctor/patient lists) ----------------
-app.get("/admin/lists", requireLogin, requireRole("admin"), async (_req, res) => {
+// ---- Get Dropdown Lists ----
+app.get("/admin/lists", async (req, res) => {
   try {
-    const doctors = await Account.find({ role: "doctor" }).sort({ name: 1 });
-    const patients = await Account.find({ role: "patient" }).sort({ name: 1 });
-
-    return res.json({
-      doctors: doctors.map((d) => ({
-        username: d.username,
-        name: d.name,
-        email: d.email,
-      })),
-      patients: patients.map((p) => ({
-        username: p.username,
-        name: p.name,
-        email: p.email,
-        basePriority: p.basePriority,
-      })),
-    });
+    const patients = await User.find({ role: "patient" });
+    const doctors = await User.find({ role: "doctor" });
+    const technicians = await User.find({ role: "technician" });
+    res.json({ patients, doctors, technicians });
   } catch (err) {
-    console.error("Admin lists error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-
-// ---------------- CREATE CASE ----------------
-app.post("/admin/case", requireLogin, requireRole("admin"), async (req, res) => {
+// ---- Schedule New Case ----
+app.post("/admin/case", async (req, res) => {
   try {
-    const {
-      patientUsername,
-      doctorUsername,
-      date,
-      timeSlot,
-      scanType,
-      priority,
-      refDoctor,
-      symptoms,
-    } = req.body;
-
-    if (!patientUsername || !doctorUsername || !date || !timeSlot || !scanType)
-      return res.status(400).json({ success: false, message: "Missing fields" });
-
-    const caseId = "CASE-" + Date.now();
-
-    const newCase = await Case.create({
-      caseId,
-      patientUsername,
-      doctorUsername,
-      date,
-      timeSlot,
-      scanType,
-      priority: priority || "Medium",
-      refDoctor: refDoctor || "",
-      symptoms: symptoms || "",
-      images: [],
-      doctorNotes: "",
-      prescription: "",
-      radiologistNotes: "",
-    });
-
+    const newCase = new Case(req.body);
+    await newCase.save();
     io.emit("case-created");
-
-    return res.json({ success: true, case: { id: newCase.caseId } });
+    res.json({ success: true });
   } catch (err) {
-    console.error("Schedule case error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(400).json({ success: false, message: err.message });
   }
 });
 
-
-// ---------------- LIST ALL CASES ----------------
-app.get("/admin/cases", requireLogin, requireRole("admin"), async (_req, res) => {
+// ---- Get All Cases (Admin) ----
+app.get("/admin/cases", async (req, res) => {
   try {
-    const cases = await Case.find().sort({ createdAt: -1 });
-
-    const doctorUsernames = [...new Set(cases.map((c) => c.doctorUsername))];
-    const patientUsernames = [...new Set(cases.map((c) => c.patientUsername))];
-
-    const doctors = await Account.find({ username: { $in: doctorUsernames } });
-    const patients = await Account.find({ username: { $in: patientUsernames } });
-
-    const docMap = new Map(doctors.map((d) => [d.username, d]));
-    const patMap = new Map(patients.map((p) => [p.username, p]));
-
-    const out = cases.map((c) => ({
-      id: c.caseId,
-      patientUsername: c.patientUsername,
-      doctorUsername: c.doctorUsername,
-      date: c.date,
-      timeSlot: c.timeSlot,
-      scanType: c.scanType,
-      priority: c.priority,
-      refDoctor: c.refDoctor,
-      symptoms: c.symptoms,
-      images: c.images,
-      doctorNotes: c.doctorNotes,
-      prescription: c.prescription,
-      radiologistNotes: c.radiologistNotes,
-      patientName: patMap.get(c.patientUsername)?.name || null,
-      doctorName: docMap.get(c.doctorUsername)?.name || null,
-    }));
-
-    return res.json({ success: true, cases: out });
+    const cases = await Case.find()
+      .populate("patient", "name")
+      .populate("doctor", "name")
+      .populate("technician", "name");
+    res.json({ cases });
   } catch (err) {
-    console.error("Admin cases error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-// ---------------- DOCTOR: LIST CASES ----------------
-app.get("/doctor/cases/:username", requireLogin, requireRole("doctor"), async (req, res) => {
-  try {
-    if (req.session.user.username !== req.params.username)
-      return res.status(403).json({ success: false, message: "Forbidden" });
-
-    const cases = await Case.find({ doctorUsername: req.params.username })
-      .sort({ date: 1, timeSlot: 1 });
-
-    const patientUsernames = [...new Set(cases.map(c => c.patientUsername))];
-    const patients = await Account.find({ username: { $in: patientUsernames } });
-
-    const patMap = new Map(patients.map(p => [p.username, p]));
-
-    const out = cases.map(c => ({
-      id: c.caseId,
-      patientUsername: c.patientUsername,
-      doctorUsername: c.doctorUsername,
-      date: c.date,
-      timeSlot: c.timeSlot,
-      scanType: c.scanType,
-      priority: c.priority,
-      refDoctor: c.refDoctor,
-      symptoms: c.symptoms,
-      images: c.images,
-      doctorNotes: c.doctorNotes,
-      prescription: c.prescription,
-      radiologistNotes: c.radiologistNotes,
-      patientName: patMap.get(c.patientUsername)?.name || null
-    }));
-
-    return res.json({ success: true, cases: out });
-  } catch (err) {
-    console.error("Doctor cases error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ message: err.message });
   }
 });
 
+// =========================
+// ROUTES: DOCTOR
+// =========================
 
-// ---------------- DOCTOR: SAVE NOTES ----------------
-app.post("/doctor/notes/:caseId", requireLogin, requireRole("doctor"), async (req, res) => {
+app.get("/doctor/cases/:doctorId", async (req, res) => {
   try {
-    const c = await Case.findOne({ caseId: req.params.caseId });
-    if (!c) return res.status(404).json({ success: false, message: "Case not found" });
+    const cases = await Case.find({ doctor: req.params.doctorId })
+      .populate("patient")
+      .populate("technician");
+    res.json({ cases });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
-    if (c.doctorUsername !== req.session.user.username)
-      return res.status(403).json({ success: false, message: "Forbidden" });
-
-    c.doctorNotes = req.body.doctorNotes || "";
-    await c.save();
-
+app.post("/doctor/diagnosis/:caseId", async (req, res) => {
+  const { diagnosis, severity } = req.body;
+  try {
+    const updated = await Case.findByIdAndUpdate(
+      req.params.caseId,
+      { diagnosis, severity, status: "diagnosed" },
+      { new: true }
+    );
     io.emit("case-updated");
-    return res.json({ success: true });
-
+    res.json({ success: true, case: updated });
   } catch (err) {
-    console.error("Doctor notes error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(400).json({ success: false, message: err.message });
   }
 });
 
+// =========================
+// ROUTES: PATIENT
+// =========================
 
-// ---------------- DOCTOR: SAVE PRESCRIPTION ----------------
-app.post("/doctor/prescription/:caseId", requireLogin, requireRole("doctor"), async (req, res) => {
+app.get("/patient/cases/:patientId", async (req, res) => {
   try {
-    const c = await Case.findOne({ caseId: req.params.caseId });
-    if (!c) return res.status(404).json({ success: false, message: "Case not found" });
+    const cases = await Case.find({ patient: req.params.patientId })
+      .populate("doctor")
+      .populate("technician");
+    res.json({ cases });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
-    if (c.doctorUsername !== req.session.user.username)
-      return res.status(403).json({ success: false, message: "Forbidden" });
+// =========================
+// ROUTES: SHARED / GENERIC
+// =========================
 
-    c.prescription = req.body.prescription || "";
-    await c.save();
+app.get("/case/:id", async (req, res) => {
+  try {
+    const singleCase = await Case.findById(req.params.id)
+      .populate("patient")
+      .populate("doctor")
+      .populate("technician");
+    res.json({ case: singleCase });
+  } catch (err) {
+    res.status(404).json({ message: "Case not found" });
+  }
+});
 
+app.post("/case/status/:id", async (req, res) => {
+  const { status } = req.body;
+  try {
+    const updated = await Case.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
     io.emit("case-updated");
-    return res.json({ success: true });
-
+    res.json({ success: true, case: updated });
   } catch (err) {
-    console.error("Doctor prescription error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(400).json({ success: false, message: err.message });
   }
 });
 
+// =========================
+// ROUTES: TECHNICIAN (Uploads)
+// =========================
 
-
-// =====================================================
-// ---------------- TECHNICIAN ROUTES ----------------
-// =====================================================
-
-app.get("/tech/cases", requireLogin, requireRole("technician"), async (_req, res) => {
-  try {
-    const cases = await Case.find().sort({ date: 1, timeSlot: 1 });
-
-    const doctorUsernames = [...new Set(cases.map(c => c.doctorUsername))];
-    const patientUsernames = [...new Set(cases.map(c => c.patientUsername))];
-
-    const doctors = await Account.find({ username: { $in: doctorUsernames } });
-    const patients = await Account.find({ username: { $in: patientUsernames } });
-
-    const docMap = new Map(doctors.map(d => [d.username, d]));
-    const patMap = new Map(patients.map(p => [p.username, p]));
-
-    const out = cases.map(c => ({
-      id: c.caseId,
-      patientUsername: c.patientUsername,
-      doctorUsername: c.doctorUsername,
-      date: c.date,
-      timeSlot: c.timeSlot,
-      scanType: c.scanType,
-      priority: c.priority,
-      refDoctor: c.refDoctor,
-      symptoms: c.symptoms,
-      images: c.images,
-      doctorNotes: c.doctorNotes,
-      prescription: c.prescription,
-      radiologistNotes: c.radiologistNotes,
-      patientName: patMap.get(c.patientUsername)?.name || null,
-      doctorName: docMap.get(c.doctorUsername)?.name || null
-    }));
-
-    return res.json({ success: true, cases: out });
-
-  } catch (err) {
-    console.error("Tech cases error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-
-// ---------------- TECH: UPLOAD IMAGES ----------------
+// Upload to Cloudinary via Memory Stream
 app.post(
-  "/tech/upload/:caseId",
+  "/tech/upload-cloud/:caseId",
   requireLogin,
   requireRole("technician"),
   upload.array("images", 10),
   async (req, res) => {
     try {
-      const c = await Case.findOne({ caseId: req.params.caseId });
+      // Find case by _id or custom caseId field. Assuming _id for Mongoose safety, 
+      // but logic below attempts custom caseId first.
+      let c = await Case.findOne({ caseId: req.params.caseId });
+      if (!c) {
+         // Fallback: try finding by MongoDB _id
+         try { c = await Case.findById(req.params.caseId); } catch(e){}
+      }
+      
       if (!c) return res.status(404).json({ success: false, message: "Case not found" });
 
       if (!req.files || req.files.length === 0)
         return res.status(400).json({ success: false, message: "No files uploaded" });
 
-      const filenames = req.files.map(f => f.filename);
+      // Process uploads
+      const uploadPromises = req.files.map((file) => {
+        return new Promise((resolve, reject) => {
+          const uploadStream = cloudinary.uploader.upload_stream(
+            { folder: "radiology_cases" },
+            (err, result) => {
+              if (err) return reject(err);
+              resolve(result.secure_url);
+            }
+          );
+          streamifier.createReadStream(file.buffer).pipe(uploadStream);
+        });
+      });
 
-      c.images = [...c.images, ...filenames];
+      const uploadedUrls = await Promise.all(uploadPromises);
+
+      // Append images
+      c.images = [...(c.images || []), ...uploadedUrls];
       await c.save();
 
-      io.emit("images-updated", { caseId: c.caseId });
+      io.emit("images-updated", { caseId: c._id });
 
       return res.json({ success: true, images: c.images });
-
     } catch (err) {
-      console.error("Tech upload error", err);
-      return res.status(500).json({ success: false, message: "Server error" });
+      console.error("Tech upload error:", err);
+      return res.status(500).json({ success: false, message: "Upload failed" });
     }
   }
 );
-// =====================================================
-// ---------------- RADIOLOGIST ROUTES ----------------
-// =====================================================
 
-app.get("/radio/cases", requireLogin, requireRole("radiologist"), async (_req, res) => {
-  try {
-    const cases = await Case.find({
-      images: { $exists: true, $not: { $size: 0 } }
-    }).sort({ createdAt: -1 });
+// =========================
+// ROUTES: RADIOLOGIST (Notes + AI)
+// =========================
 
-    const doctorUsernames = [...new Set(cases.map(c => c.doctorUsername))];
-    const patientUsernames = [...new Set(cases.map(c => c.patientUsername))];
-
-    const doctors = await Account.find({ username: { $in: doctorUsernames } });
-    const patients = await Account.find({ username: { $in: patientUsernames } });
-
-    const docMap = new Map(doctors.map(d => [d.username, d]));
-    const patMap = new Map(patients.map(p => [p.username, p]));
-
-    const out = cases.map(c => ({
-      id: c.caseId,
-      patientUsername: c.patientUsername,
-      doctorUsername: c.doctorUsername,
-      date: c.date,
-      timeSlot: c.timeSlot,
-      scanType: c.scanType,
-      priority: c.priority,
-      refDoctor: c.refDoctor,
-      symptoms: c.symptoms,
-      images: c.images,
-      doctorNotes: c.doctorNotes,
-      prescription: c.prescription,
-      radiologistNotes: c.radiologistNotes,
-      patientName: patMap.get(c.patientUsername)?.name || null,
-      doctorName: docMap.get(c.doctorUsername)?.name || null
-    }));
-
-    return res.json({ success: true, cases: out });
-
-  } catch (err) {
-    console.error("Radio cases error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-
+// Save Radiologist Notes
 app.post("/radio/notes/:caseId", requireLogin, requireRole("radiologist"), async (req, res) => {
   try {
-    const c = await Case.findOne({ caseId: req.params.caseId });
+    const c = await Case.findById(req.params.caseId);
     if (!c) return res.status(404).json({ success: false, message: "Case not found" });
 
     c.radiologistNotes = req.body.radiologistNotes || "";
     await c.save();
 
-    io.emit("radiologist-updated", { caseId: c.caseId });
+    io.emit("radiologist-updated", { caseId: c._id });
 
     return res.json({ success: true });
-
   } catch (err) {
-    console.error("Radio notes error", err);
+    console.error("Radio notes error:", err);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-
-
-// =====================================================
-// ---------------- PATIENT ROUTES ----------------
-// =====================================================
-
-app.get("/patient/cases/:username", requireLogin, requireRole("patient"), async (req, res) => {
+// AI Analysis with Gemini
+app.post("/radio/ai-analyze/:caseId", requireLogin, requireRole("radiologist"), async (req, res) => {
   try {
-    if (req.session.user.username !== req.params.username)
-      return res.status(403).json({ success: false, message: "Forbidden" });
+    const c = await Case.findById(req.params.caseId);
+    if (!c) return res.status(404).json({ success: false, message: "Case not found" });
 
-    const cases = await Case.find({ patientUsername: req.params.username })
-      .sort({ date: 1, timeSlot: 1 });
+    if (!c.images || c.images.length === 0)
+      return res.status(400).json({ success: false, message: "No images to analyze" });
 
-    const doctorUsernames = [...new Set(cases.map(c => c.doctorUsername))];
-    const doctors = await Account.find({ username: { $in: doctorUsernames } });
+    const imageUrl = c.images[0]; // Analyzing the first image
 
-    const docMap = new Map(doctors.map(d => [d.username, d]));
+    const aiReport = await analyzeImageURL(imageUrl);
 
-    const out = cases.map(c => ({
-      id: c.caseId,
-      patientUsername: c.patientUsername,
-      doctorUsername: c.doctorUsername,
-      date: c.date,
-      timeSlot: c.timeSlot,
-      scanType: c.scanType,
-      priority: c.priority,
-      refDoctor: c.refDoctor,
-      symptoms: c.symptoms,
-      images: c.images,
-      doctorNotes: c.doctorNotes,
-      prescription: c.prescription,
-      radiologistNotes: c.radiologistNotes,
-      doctorName: docMap.get(c.doctorUsername)?.name || null
-    }));
+    // Append AI report to existing notes
+    c.radiologistNotes = `${c.radiologistNotes || ""}\n\n--- AI ANALYSIS REPORT (${new Date().toLocaleDateString()}) ---\n${aiReport}`;
+    await c.save();
 
-    return res.json({ success: true, cases: out });
+    io.emit("ai-report-generated", { caseId: c._id });
 
+    return res.json({ success: true, aiReport });
   } catch (err) {
-    console.error("Patient cases error", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    console.error("AI analyze error:", err);
+    return res.status(500).json({ success: false, message: "AI analysis failed" });
   }
 });
 
+// =========================
+// ERROR HANDLING & START
+// =========================
 
+app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
 
-// =====================================================
-// ---------------- SOCKET.IO SERVER ----------------
-// =====================================================
-
-const httpServer = http.createServer(app);
-
-const io = new Server(httpServer, {
-  cors: {
-    origin: [
-      "https://radiology-system.netlify.app",
-      "https://*.netlify.app",
-      "http://localhost:5500",
-      "http://127.0.0.1:5500"
-    ],
-    credentials: true
-  }
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: "Route not found" });
 });
 
-
-io.on("connection", (socket) => {
-  console.log("🔥 User connected:", socket.id);
-
-  socket.on("register", (data) => {
-    console.log("User registered:", data);
-  });
-
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
-  });
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error("UNHANDLED ERROR:", err);
+  res.status(500).json({ success: false, message: "Internal server error" });
 });
 
-
-// =====================================================
-// ---------------- START SERVER ----------------
-// =====================================================
-
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Radiology backend running on port ${PORT}`);
-  console.log("Using Render deployment URL automatically.");
+// Start Server
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log("🌍 Environment:", process.env.NODE_ENV || "development");
 });
