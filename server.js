@@ -67,6 +67,23 @@ mongoose.connect(process.env.MONGO_URI, {
 })
 .then(() => console.log("✅ MongoDB Connected"))
 .catch((err) => console.error("❌ MongoDB Error:", err));
+// AUTO‑CREATE DEFAULT ADMIN IF NOT EXISTS
+(async () => {
+  const admin = await User.findOne({ role: "admin" });
+  if (!admin) {
+    await User.create({
+      name: "System Admin",
+      email: "admin@system.com",
+      username: "admin",
+      password: "admin",
+      role: "admin"
+    });
+    console.log("🟢 Default admin created (admin/admin)");
+  } else {
+    console.log("Admin already exists");
+  }
+})();
+
 
 // =========================
 // MIDDLEWARE
