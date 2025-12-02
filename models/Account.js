@@ -1,19 +1,20 @@
 const mongoose = require("mongoose");
 
-const accountSchema = new mongoose.Schema(
-  {
-    role: {
-      type: String,
-      enum: ["admin", "doctor", "technician", "radiologist", "patient"],
-      required: true
-    },
-    username: { type: String, required: true, unique: true },
-    password: { type: String, required: true }, // hashed
-    name: { type: String },
-    email: { type: String },
-    basePriority: { type: String, enum: ["Critical", "Medium", "Safe"], default: "Medium" }
+const accountSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true }, // In production, hash this!
+  
+  role: { 
+    type: String, 
+    enum: ["admin", "doctor", "patient", "technician", "radiologist"], 
+    required: true 
   },
-  { timestamps: true }
-);
+  
+  // Specific to patients
+  basePriority: { type: String, enum: ["Critical", "Medium", "Safe"], default: "Safe" }
+});
 
-module.exports = mongoose.model("Account", accountSchema);
+// IMPORTANT: This name "User" must match the 'ref' in Case.js
+module.exports = mongoose.model("User", accountSchema);
