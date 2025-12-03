@@ -3,19 +3,19 @@
 // =========================
 
 require("dotenv").config();
-const path = require("path");
-const fs = require("fs");
 const http = require("http");
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const session = require("express-session");
-const bcrypt = require("bcryptjs");
 const multer = require("multer");
 const axios = require("axios");
 const streamifier = require("streamifier");
 const { Server } = require("socket.io");
 const cloudinary = require("cloudinary").v2;
+
+// 1. IMPORT GOOGLE AI LIBRARY
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 
 // Models
 const User = require("./models/Account"); 
@@ -37,7 +37,6 @@ const FRONTEND_ORIGINS = [
   "http://localhost:3000"
 ];
 
-// Socket.io Setup
 const io = new Server(server, {
   cors: {
     origin: FRONTEND_ORIGINS,
@@ -51,7 +50,7 @@ app.set("io", io);
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
   socket.on("disconnect", () => {
-    console.log("Socket disconnected:", socket.id);
+    // console.log("Socket disconnected:", socket.id);
   });
 });
 
@@ -141,49 +140,59 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 // =========================
-// GOOGLE GEMINI — AI HELPER (FIXED)
+// GOOGLE GEMINI — OFFICIAL SDK VERSION
 // =========================
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+// Initialize Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 async function analyzeImageURL(imageUrl) {
   try {
-    // 1. Download the image from Cloudinary (or any URL)
+    console.log(`🤖 Starting AI Analysis for: ${imageUrl}`);
+    
+    if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is missing in .env");
+
+    // 1. Download the image using Axios (SDK needs Base64, not URL)
     const imageResp = await axios.get(imageUrl, { responseType: "arraybuffer" });
     
-    // 2. Convert to Base64
-    const base64Image = Buffer.from(imageResp.data).toString("base64");
+    // 2. Detect Mime Type
+    const mimeType = imageResp.headers["content-type"] || "image/jpeg";
     
-    // 3. Simple MIME detection
-    const mimeType = imageUrl.endsWith(".png") ? "image/png" : "image/jpeg";
+    // 3. Prepare Image Part for SDK
+    const imagePart = {
+      inlineData: {
+        data: Buffer.from(imageResp.data).toString("base64"),
+        mimeType: mimeType,
+      },
+    };
 
-    // 4. Send to Gemini using inlineData
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              { text: "Analyze this medical scan and provide a detailed radiology report. Include findings, likely diagnosis, and severity." },
-              {
-                inlineData: {
-                  mimeType: mimeType,
-                  data: base64Image
-                }
-              }
-            ]
-          }
+    // 4. Get Model (gemini-1.5-flash is faster/cheaper)
+    const model = genAI.getGenerativeModel({ 
+        model: "gemini-1.5-flash",
+        // CRITICAL: Disable safety filters for Medical Images (often flagged as gore)
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
         ]
-      }
-    );
+    });
 
-    return (
-      response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "AI could not generate a report."
-    );
+    const prompt = "You are an expert Radiologist. Analyze this medical scan. Provide a concise report with: 1. Findings 2. Likely Diagnosis 3. Severity (Low/Medium/High).";
+
+    // 5. Generate Content
+    const result = await model.generateContent([prompt, imagePart]);
+    const response = await result.response;
+    const text = response.text();
+
+    console.log("✅ AI Analysis Successful");
+    return text;
 
   } catch (err) {
-    console.error("Gemini error details:", err.response?.data || err.message);
-    return "Gemini analysis failed. Please check server logs.";
+    console.error("❌ GEMINI ERROR:", err.message);
+    if(err.response) console.error(JSON.stringify(err.response, null, 2));
+    
+    return `AI Analysis Failed: ${err.message}`; 
   }
 }
 
@@ -192,25 +201,12 @@ async function analyzeImageURL(imageUrl) {
 // =========================
 app.post("/auth/login", async (req, res) => {
   const { username, password, role } = req.body;
-
-  if (!username || !password || !role) {
-    return res.status(400).json({ success: false, message: "Missing fields" });
-  }
-
   try {
     const user = await User.findOne({ username, role });
-    
-    // Simple password check (Hash in production!)
     if (!user || user.password !== password) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
-
-    req.session.user = {
-      id: user._id,
-      username: user.username,
-      role: user.role,
-    };
-
+    req.session.user = { id: user._id, username: user.username, role: user.role };
     res.json({ success: true, user: req.session.user });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -236,7 +232,7 @@ app.get("/auth/me", (req, res) => {
 // =========================
 
 app.post("/admin/doctor", async (req, res) => {
-  const { name, email, username, password } = req.body; // Added password extraction
+  const { name, email, username, password } = req.body;
   try {
     const doc = new User({
       name, email, username,
@@ -306,8 +302,7 @@ app.get("/admin/lists", async (req, res) => {
 
 app.post("/admin/case", async (req, res) => {
   try {
-    const newCase = new Case(req.body);
-    await newCase.save();
+    await Case.create(req.body);
     io.emit("case-created");
     res.json({ success: true });
   } catch (err) {
@@ -332,7 +327,6 @@ app.get("/admin/cases", async (req, res) => {
 // ROUTES: TECHNICIAN
 // =========================
 
-// Get All Cases for Technician
 app.get("/technician/cases", requireLogin, requireRole("technician"), async (req, res) => {
   try {
     const cases = await Case.find()
@@ -344,7 +338,6 @@ app.get("/technician/cases", requireLogin, requireRole("technician"), async (req
   }
 });
 
-// Upload to Cloudinary
 app.post(
   "/tech/upload-cloud/:caseId",
   requireLogin,
@@ -352,7 +345,6 @@ app.post(
   upload.array("images", 10),
   async (req, res) => {
     try {
-      // Find case by custom caseId OR _id
       let c = await Case.findOne({ caseId: req.params.caseId });
       if (!c) {
          try { c = await Case.findById(req.params.caseId); } catch(e){}
@@ -379,9 +371,8 @@ app.post(
 
       const uploadedUrls = await Promise.all(uploadPromises);
 
-      // Append images
       c.images = [...(c.images || []), ...uploadedUrls];
-      c.status = "Scanned"; // Update status
+      c.status = "Scanned"; 
       await c.save();
 
       io.emit("images-updated", { caseId: c._id });
@@ -414,11 +405,9 @@ app.post("/radio/notes/:caseId", requireLogin, requireRole("radiologist"), async
   }
 });
 
-// Trigger AI Analysis
+// Trigger AI Analysis (Updated to use SDK)
 app.post("/radio/ai-analyze/:caseId", requireLogin, requireRole("radiologist"), async (req, res) => {
   try {
-    // 1. Find Case
-    // Try by _id first, then by caseId if strictly needed, usually frontend sends _id for actions
     let c = await Case.findById(req.params.caseId);
     if (!c) c = await Case.findOne({ caseId: req.params.caseId });
 
@@ -427,13 +416,13 @@ app.post("/radio/ai-analyze/:caseId", requireLogin, requireRole("radiologist"), 
     if (!c.images || c.images.length === 0)
       return res.status(400).json({ success: false, message: "No images to analyze" });
 
-    // 2. Analyze First Image
+    // Analyze First Image
     const imageUrl = c.images[0]; 
-    console.log(`Analyzing image for Case ${c.caseId}: ${imageUrl}`);
+    console.log(`Analyzing image for Case ${c.caseId || c._id}: ${imageUrl}`);
 
     const aiReport = await analyzeImageURL(imageUrl);
 
-    // 3. Save Report
+    // Save Report
     const separator = `\n\n--- AI ANALYSIS REPORT (${new Date().toLocaleDateString()}) ---\n`;
     c.radiologistNotes = (c.radiologistNotes || "") + separator + aiReport;
     
