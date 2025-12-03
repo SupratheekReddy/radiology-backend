@@ -29,6 +29,8 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
+
+// ALLOW YOUR NETLIFY URL HERE + Localhost
 const FRONTEND_ORIGINS = [
   "https://radiology-system.netlify.app",
   "https://*.netlify.app",
@@ -90,7 +92,9 @@ mongoose.connect(process.env.MONGO_URI, {
 // MIDDLEWARE
 // =========================
 
+// Critical for Render + Netlify cookies
 app.set("trust proxy", 1);
+
 app.use(cors({ origin: FRONTEND_ORIGINS, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -166,21 +170,18 @@ async function analyzeImageURL(imageUrl) {
       },
     };
 
-    // 4. Get Model — FIXED: Force v1beta to avoid 404 errors
-    const model = genAI.getGenerativeModel(
-        { 
-            model: "gemini-1.5-flash",
-            // CRITICAL: Disable safety filters for Medical Images
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            ]
-        },
-        // THIS FIXES THE 404 ERROR:
-        { apiVersion: "v1beta" } 
-    );
+    // 4. Get Model
+    // ✅ FIXED: Using 'gemini-1.5-flash-latest' to resolve 404 error
+    const model = genAI.getGenerativeModel({ 
+        model: "gemini-1.5-flash-latest",
+        // CRITICAL: Disable safety filters for Medical Images
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ]
+    });
 
     const prompt = "You are an expert Radiologist. Analyze this medical scan. Provide a concise report with: 1. Findings 2. Likely Diagnosis 3. Severity (Low/Medium/High).";
 
