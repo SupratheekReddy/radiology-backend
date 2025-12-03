@@ -171,19 +171,17 @@ async function analyzeImageURL(imageUrl) {
     };
 
     // 4. Get Model
-    // ✅ FIX: Exact model name + Explicit v1beta
-    const model = genAI.getGenerativeModel(
-        { 
-            model: "gemini-1.5-flash", // DO NOT USE '-latest'
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            ]
-        },
-        { apiVersion: "v1beta" } // Force Beta endpoint
-    );
+    // ✅ FIXED: Changed to 'gemini-2.0-flash' which exists in your account list
+    const model = genAI.getGenerativeModel({ 
+        model: "gemini-2.0-flash", 
+        // CRITICAL: Disable safety filters for Medical Images
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ]
+    });
 
     const prompt = "You are an expert Radiologist. Analyze this medical scan. Provide a concise report with: 1. Findings 2. Likely Diagnosis 3. Severity (Low/Medium/High).";
 
@@ -199,6 +197,7 @@ async function analyzeImageURL(imageUrl) {
     console.error("❌ GEMINI ERROR:", err.message);
     if(err.response) console.error(JSON.stringify(err.response, null, 2));
     
+    // Fallback error message if blocked
     if(err.message.includes("SAFETY")) {
         return "AI Analysis Failed: Image flagged by safety filters. Try a clearer scan.";
     }
