@@ -152,7 +152,7 @@ async function analyzeImageURL(imageUrl) {
     
     if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is missing in .env");
 
-    // 1. Download the image using Axios (SDK needs Base64, not URL)
+    // 1. Download the image
     const imageResp = await axios.get(imageUrl, { responseType: "arraybuffer" });
     
     // 2. Detect Mime Type
@@ -166,17 +166,21 @@ async function analyzeImageURL(imageUrl) {
       },
     };
 
-    // 4. Get Model (gemini-1.5-flash is faster/cheaper)
-    const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        // CRITICAL: Disable safety filters for Medical Images (often flagged as gore)
-        safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        ]
-    });
+    // 4. Get Model — FIXED: Force v1beta to avoid 404 errors
+    const model = genAI.getGenerativeModel(
+        { 
+            model: "gemini-1.5-flash",
+            // CRITICAL: Disable safety filters for Medical Images
+            safetySettings: [
+                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            ]
+        },
+        // THIS FIXES THE 404 ERROR:
+        { apiVersion: "v1beta" } 
+    );
 
     const prompt = "You are an expert Radiologist. Analyze this medical scan. Provide a concise report with: 1. Findings 2. Likely Diagnosis 3. Severity (Low/Medium/High).";
 
@@ -191,6 +195,11 @@ async function analyzeImageURL(imageUrl) {
   } catch (err) {
     console.error("❌ GEMINI ERROR:", err.message);
     if(err.response) console.error(JSON.stringify(err.response, null, 2));
+    
+    // Fallback error message if blocked
+    if(err.message.includes("SAFETY")) {
+        return "AI Analysis Failed: Image flagged by safety filters. Try a clearer scan.";
+    }
     
     return `AI Analysis Failed: ${err.message}`; 
   }
