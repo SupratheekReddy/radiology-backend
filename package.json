@@ -22,15 +22,20 @@
     "multer": "^1.4.5-lts.1",
     "multer-storage-cloudinary": "^4.0.0",
     "node-fetch": "^3.3.2",
+    "nodemailer": "^6.9.13",
+    "pdfkit": "^0.15.0",
     "redis": "^4.6.13",
     "socket.io": "^4.8.1",
     "streamifier": "^0.1.1",
-    "winston": "^3.18.3",
+    "winston": "^3.13.0",
     "winston-logstash": "^1.2.1",
     "winston-logstash-transport": "^2.0.0",
     "winston-transport": "^4.9.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
