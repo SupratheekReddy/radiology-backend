@@ -1,5 +1,5 @@
 // ================================================================
-// SERVER.JS — Final Version (Original Logic + New AI Features)
+// SERVER.JS — Final Version (Original Structure + Render Fixes)
 // ================================================================
 
 require("dotenv").config();
@@ -30,34 +30,32 @@ if (requiredEnv.some(key => !process.env[key])) {
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000; // Render usually uses 10000
 
-// --- 2. ROBUST CORS (Allow Localhost + Live Server) ---
+// --- 2. ROBUST CORS (Fixed for Netlify) ---
+// ✅ FIX: Explicitly allowed your Netlify URL
 const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin.includes("netlify.app")) {
-            return callback(null, true);
-        }
-        callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "DELETE"]
+    origin: "https://radiology-system.netlify.app", 
+    credentials: true, // Required for cookies/session
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 };
 
+// ✅ FIX: Trust Proxy (Required for Render to handle cookies correctly)
 app.set("trust proxy", 1);
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ✅ FIX: Session Settings for Cross-Site (Netlify -> Render)
 app.use(session({
     secret: process.env.SESSION_SECRET || "radai_secret_999",
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === "production", // False on localhost
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 24 * 60 * 60 * 1000 
+        secure: true,        // REQUIRED: Must be true for Render (HTTPS)
+        sameSite: 'none',    // REQUIRED: Allows cookie flow from Netlify -> Render
+        maxAge: 24 * 60 * 60 * 1000 // 1 Day
     },
 }));
 
@@ -114,7 +112,8 @@ const CaseSchema = new mongoose.Schema({
 const Case = mongoose.models.Case || mongoose.model("Case", CaseSchema);
 
 // Connect DB
-mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+// ✅ FIX: Removed deprecated options (useNewUrlParser) to clean up logs
+mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log("✅ MongoDB Connected"))
     .catch((err) => console.error("❌ MongoDB Error:", err));
 
@@ -193,12 +192,30 @@ app.post("/auth/login", async (req, res) => {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
     req.session.user = { id: user._id, username: user.username, role: user.role, email: user.email };
-    res.json({ success: true, user: req.session.user });
+    
+    // ✅ FIX: Explicit save to ensure cookie is set before response
+    req.session.save((err) => {
+        if(err) return res.status(500).json({success: false, message: "Session Error"});
+        res.json({ success: true, user: req.session.user });
+    });
+
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-app.post("/auth/logout", (req, res) => req.session.destroy(() => res.json({ success: true })));
-app.get("/auth/me", (req, res) => res.json({ success: !!req.session.user, user: req.session.user }));
+app.post("/auth/logout", (req, res) => {
+    req.session.destroy(() => {
+        res.clearCookie("connect.sid", { path: '/' });
+        res.json({ success: true });
+    });
+});
+
+app.get("/auth/me", (req, res) => {
+    if(req.session.user) {
+        res.json({ success: true, user: req.session.user });
+    } else {
+        res.status(401).json({ success: false, message: "Not logged in" });
+    }
+});
 
 // =========================
 // ROUTES: ADMIN (Your Original Logic Preserved)
@@ -276,7 +293,7 @@ app.delete("/admin/case/:id", requireRole(['admin', 'radiologist']), async (req,
 // ROUTES: DOCTOR (Enhanced)
 // =========================
 
-// 1. Create Case Route (Missing in original)
+// 1. Create Case Route
 app.post("/doctor/create-case", requireRole('doctor'), async (req, res) => {
     try {
         const { patientId, scanType, symptoms } = req.body;
