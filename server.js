@@ -1,5 +1,5 @@
 // ================================================================
-// SERVER.JS — Final Merged Version (Gemini 2.0 Flash + Render Fixes)
+// SERVER.JS — Final Version (Advanced AI + Delete + Prescriptions)
 // ================================================================
 
 require("dotenv").config();
@@ -31,11 +31,10 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 10000; 
 
-// --- 2. ROBUST CORS (Hybrid Approach) ---
-// Allows your Netlify URL + Localhost for testing
+// --- 2. ROBUST CORS ---
 const ALLOWED_ORIGINS = [
-    "https://radiology-system.netlify.app", // Your Netlify
-    "http://localhost:5500",                // Localhost VS Code
+    "https://radiology-system.netlify.app", 
+    "http://localhost:5500",                
     "http://127.0.0.1:5500"
 ];
 
@@ -52,14 +51,14 @@ const corsOptions = {
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 };
 
-// ✅ FIX: Trust Proxy (Required for Render)
+// Trust Proxy for Render
 app.set("trust proxy", 1);
 
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ FIX: Session Settings for Cross-Site
+// Session Settings
 app.use(session({
     secret: process.env.SESSION_SECRET || "radai_secret_999",
     resave: false,
@@ -104,19 +103,23 @@ const CaseSchema = new mongoose.Schema({
     status: { type: String, default: 'Pending' },
     date: { type: Date, default: Date.now },
     
+    // AI Data
     aiData: { 
+        isMedical: { type: Boolean, default: true },
         findings: String, 
         diagnosis: String, 
         confidence: String, 
         bodyPart: String 
     },
-    radiologistNotes: String, 
-    prescription: String,
+    
+    // Notes & Prescriptions
+    radiologistNotes: String, // Radiologist's Analysis/Note
+    prescription: String,     // Doctor's Final Prescription
+    
     chatHistory: { type: [{ role: String, message: String }], default: [] }
 });
 const Case = mongoose.models.Case || mongoose.model("Case", CaseSchema);
 
-// Connect DB
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log("✅ MongoDB Connected"))
     .catch((err) => console.error("❌ MongoDB Error:", err));
@@ -155,10 +158,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // --- EMAIL HELPER ---
 async function sendEmail(to, subject, html) {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        console.log("⚠️ Email skipped (Missing Credentials)");
-        return;
-    }
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) return;
     try {
         const transporter = nodemailer.createTransport({
             service: 'gmail',
@@ -169,11 +169,6 @@ async function sendEmail(to, subject, html) {
 }
 
 // Middleware
-const requireLogin = (req, res, next) => {
-  if (req.session && req.session.user) next();
-  else res.status(401).json({ success: false, message: "Unauthorized" });
-};
-
 const requireRole = (role) => (req, res, next) => {
     const roles = Array.isArray(role) ? role : [role];
     if (req.session.user && (roles.includes(req.session.user.role) || req.session.user.role === 'admin')) {
@@ -194,9 +189,8 @@ app.post("/auth/login", async (req, res) => {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
     req.session.user = { id: user._id, username: user.username, role: user.role, email: user.email };
-    
     req.session.save((err) => {
-        if(err) return res.status(500).json({success: false, message: "Session Error"});
+        if(err) return res.status(500).json({success: false});
         res.json({ success: true, user: req.session.user });
     });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -210,41 +204,13 @@ app.post("/auth/logout", (req, res) => {
 });
 
 app.get("/auth/me", (req, res) => {
-    if(req.session.user) {
-        res.json({ success: true, user: req.session.user });
-    } else {
-        res.status(401).json({ success: false, message: "Not logged in" });
-    }
+    if(req.session.user) res.json({ success: true, user: req.session.user });
+    else res.status(401).json({ success: false, message: "Not logged in" });
 });
 
 // =========================
-// ROUTES: ADMIN
+// ROUTES: ADMIN (With DELETE)
 // =========================
-
-app.post("/admin/doctor", requireRole('admin'), async (req, res) => {
-  try { await User.create({ ...req.body, role: "doctor" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
-});
-
-app.post("/admin/technician", requireRole('admin'), async (req, res) => {
-  try { await User.create({ ...req.body, role: "technician" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
-});
-
-app.post("/admin/radiologist", requireRole('admin'), async (req, res) => {
-  try { await User.create({ ...req.body, role: "radiologist" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
-});
-
-app.post("/admin/patient", requireRole('admin'), async (req, res) => {
-  try { await User.create({ ...req.body, role: "patient" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
-});
-
-app.get("/admin/lists", requireRole(['admin', 'doctor']), async (req, res) => {
-  try {
-    const patients = await User.find({ role: "patient" });
-    const doctors = await User.find({ role: "doctor" });
-    const technicians = await User.find({ role: "technician" });
-    res.json({ patients, doctors, technicians });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
 
 app.get("/admin/users/:role", requireRole(['admin', 'doctor']), async (req, res) => {
     try {
@@ -265,11 +231,28 @@ app.get("/admin/cases", requireRole(['admin', 'radiologist', 'technician']), asy
 });
 
 app.delete("/admin/case/:id", requireRole(['admin', 'radiologist']), async (req, res) => {
-    try { await Case.findByIdAndDelete(req.params.id); io.emit("update-dashboard"); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
+    try { 
+        await Case.findByIdAndDelete(req.params.id); 
+        io.emit("update-dashboard"); 
+        res.json({ success: true, message: "Case Deleted" }); 
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// ... (Other Admin Routes like add doctor/tech/etc are generic and implicitly handled if you kept them, otherwise add them back if missing from your copy) ...
+app.post("/admin/doctor", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "doctor" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
+app.post("/admin/technician", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "technician" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
+app.post("/admin/radiologist", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "radiologist" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
+app.post("/admin/patient", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "patient" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
+app.get("/admin/lists", requireRole(['admin', 'doctor']), async (req, res) => {
+  try {
+    const patients = await User.find({ role: "patient" });
+    const doctors = await User.find({ role: "doctor" });
+    res.json({ patients, doctors });
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 // =========================
-// ROUTES: DOCTOR
+// ROUTES: DOCTOR & TECH
 // =========================
 
 app.post("/doctor/create-case", requireRole('doctor'), async (req, res) => {
@@ -300,10 +283,6 @@ app.get("/doctor/cases/:doctorId", requireRole('doctor'), async (req, res) => {
     res.json({ cases });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
-
-// =========================
-// ROUTES: TECHNICIAN
-// =========================
 
 app.get("/technician/cases", requireRole("technician"), async (req, res) => {
   try {
@@ -336,34 +315,43 @@ app.post("/tech/upload-cloud/:caseId", requireRole("technician"), upload.array("
 });
 
 // =========================
-// ROUTES: RADIOLOGIST (AI with GEMINI 2.0 + SAFETY SETTINGS)
+// ROUTES: RADIOLOGIST (UPDATED AI + NOTES)
 // =========================
 
+// ✅ UPDATED: Appends notes with timestamp instead of overwriting
 app.post("/radio/notes/:caseId", requireRole("radiologist"), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
-    c.radiologistNotes = req.body.radiologistNotes || "";
-    await c.save(); io.emit("update-dashboard"); res.json({ success: true });
+    
+    const newNote = req.body.radiologistNotes;
+    const timestamp = new Date().toLocaleString();
+    
+    // Append to existing notes
+    c.radiologistNotes = c.radiologistNotes 
+        ? `${c.radiologistNotes}\n\n[Radiologist Note - ${timestamp}]: ${newNote}`
+        : `[Radiologist Note - ${timestamp}]: ${newNote}`;
+
+    await c.save(); 
+    io.emit("update-dashboard"); 
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ message: "Error" }); }
 });
 
+// ✅ UPDATED: Advanced AI Logic (Checks Non-Medical + Detailed Report)
 app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
     if (!c?.images?.length) return res.status(400).json({ message: "No images found." });
 
-    // 1. Download Image
     let imageResp;
     try {
         imageResp = await axios.get(c.images[0], { responseType: "arraybuffer", timeout: 10000 });
     } catch (axiosErr) {
-        return res.status(400).json({ message: "Failed to download image from Cloudinary." });
+        return res.status(400).json({ message: "Failed to download image." });
     }
 
     const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
 
-    // ✅ FIX: Using Gemini 2.0 Flash (Matches your old file)
-    // ✅ FIX: Added Safety Settings to BLOCK_NONE (Required for X-Rays)
     const model = genAI.getGenerativeModel({ 
         model: "gemini-2.0-flash", 
         generationConfig: { responseMimeType: "application/json" },
@@ -375,10 +363,34 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
         ]
     });
 
-    const prompt = `Analyze this medical scan. 
-    1. Check for Fractures, Tumors, Hemorrhage.
-    2. Set 'severity' to 'Critical' if life-threatening, otherwise 'Medium' or 'Safe'.
-    Return JSON: { "findings": "string", "diagnosis": "string", "severity": "Safe|Medium|Critical", "confidence": "string", "bodyPart": "string", "report": "string" }`;
+    // 🔴 ADVANCED PROMPT
+    const prompt = `
+    Role: Expert Radiologist.
+    Task: Analyze this image.
+
+    STEP 1: IDENTITY CHECK
+    Is this a medical scan (X-Ray, MRI, CT, Ultrasound)?
+    - If NO (e.g., person, celebrity like Dhoni, landscape, object): Return JSON with "isMedical": false.
+    - If YES: Proceed to Step 2.
+
+    STEP 2: DETAILED ANALYSIS
+    Provide a COMPREHENSIVE report.
+    1. Anatomical Region.
+    2. Detailed Observations (Bone integrity, soft tissue, spacing, anomalies).
+    3. Diagnosis (Specific condition or "Normal").
+    4. Severity (Safe / Medium / Critical).
+
+    Return JSON format:
+    {
+      "isMedical": true,
+      "bodyPart": "String",
+      "findings": "String (Detailed medical observation, 3-4 sentences)",
+      "diagnosis": "String",
+      "severity": "Safe" | "Medium" | "Critical",
+      "confidence": "String (e.g. 98%)",
+      "report": "String (Full formatted report)"
+    }
+    `;
 
     const result = await model.generateContent({
         contents: [{ role: "user", parts: [{ text: prompt }, imagePart] }]
@@ -386,18 +398,29 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
 
     const rawText = result.response.text();
     
-    // Parse JSON
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     let aiData;
-    if (jsonMatch) {
-        try { aiData = JSON.parse(jsonMatch[0]); } catch(e) { aiData = { findings: rawText, diagnosis: "Manual Review", severity: "Medium" }; }
+    try { 
+        aiData = JSON.parse(rawText); 
+    } catch(e) { 
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if(jsonMatch) aiData = JSON.parse(jsonMatch[0]);
+        else aiData = { isMedical: true, findings: rawText, diagnosis: "Manual Review", severity: "Medium" }; 
+    }
+
+    // Handle Non-Medical Images
+    if (aiData.isMedical === false) {
+        aiData.findings = "Image is NOT related to medical radiology. Analysis aborted.";
+        aiData.diagnosis = "Invalid Image";
+        aiData.severity = "Safe";
+        aiData.bodyPart = "N/A";
+        c.radiologistNotes = "⚠️ Invalid Image Uploaded (Non-Medical detected).";
     } else {
-        aiData = { findings: rawText, diagnosis: "Manual Review", severity: "Medium" };
+        // Save valid report
+        c.radiologistNotes = aiData.report || aiData.findings;
     }
 
     c.priority = aiData.severity || "Medium";
     c.aiData = aiData;
-    c.radiologistNotes = aiData.report;
     c.status = "Analyzed";
     await c.save();
 
@@ -410,7 +433,7 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
   }
 });
 
-// --- CHAT WITH SCAN (GEMINI 2.0) ---
+// --- CHAT WITH SCAN ---
 app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req, res) => {
     try {
         const { question } = req.body;
@@ -420,7 +443,6 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
         const imageResp = await axios.get(c.images[0], { responseType: "arraybuffer" });
         const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
         
-        // ✅ FIX: Using Gemini 2.0 Flash
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
         
         const result = await model.generateContent({
@@ -465,7 +487,17 @@ app.get("/patient/pdf/:caseId", requireRole(['patient', 'doctor', 'radiologist']
         doc.fontSize(20).text("Rad AI Medical Report", { align: 'center' }); doc.moveDown();
         doc.fontSize(12).text(`Patient: ${c.patient?.name || 'N/A'}`); doc.text(`Doctor: ${c.doctor?.name || 'N/A'}`);
         doc.text(`Date: ${new Date(c.date).toDateString()}`);
-        if(c.prescription) { doc.moveDown(); doc.fontSize(14).text("Prescription:", { underline: true }); doc.text(c.prescription); }
+        
+        // Add Radiologist Notes
+        if(c.radiologistNotes) {
+            doc.moveDown();
+            doc.fontSize(14).text("Radiology Findings:", { underline: true });
+            doc.fontSize(12).text(c.radiologistNotes);
+        }
+
+        if(c.prescription) { 
+            doc.moveDown(); doc.fontSize(14).text("Prescription:", { underline: true }); doc.text(c.prescription); 
+        }
         doc.end();
     } catch (e) { res.status(500).send("PDF Error"); }
 });
