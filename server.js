@@ -1,5 +1,5 @@
 // ================================================================
-// SERVER.JS — Final Version (Original Structure + Render Fixes)
+// SERVER.JS — Final Merged Version (Gemini 2.0 Flash + Render Fixes)
 // ================================================================
 
 require("dotenv").config();
@@ -13,15 +13,14 @@ const axios = require("axios");
 const streamifier = require("streamifier");
 const { Server } = require("socket.io");
 const cloudinary = require("cloudinary").v2;
-const nodemailer = require("nodemailer"); // NEW: Email
-const PDFDocument = require("pdfkit");    // NEW: PDF
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const nodemailer = require("nodemailer"); 
+const PDFDocument = require("pdfkit");    
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 
 // --- 1. ENVIRONMENT CHECK ---
 const requiredEnv = ['MONGO_URI', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET', 'GEMINI_API_KEY'];
 if (requiredEnv.some(key => !process.env[key])) {
     console.error(`❌ CRITICAL: Missing .env keys: ${requiredEnv.filter(k => !process.env[k]).join(', ')}`);
-    // process.exit(1); // Uncomment to enforce strict check
 }
 
 // =========================
@@ -30,32 +29,45 @@ if (requiredEnv.some(key => !process.env[key])) {
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 10000; // Render usually uses 10000
+const PORT = process.env.PORT || 10000; 
 
-// --- 2. ROBUST CORS (Fixed for Netlify) ---
-// ✅ FIX: Explicitly allowed your Netlify URL
+// --- 2. ROBUST CORS (Hybrid Approach) ---
+// Allows your Netlify URL + Localhost for testing
+const ALLOWED_ORIGINS = [
+    "https://radiology-system.netlify.app", // Your Netlify
+    "http://localhost:5500",                // Localhost VS Code
+    "http://127.0.0.1:5500"
+];
+
 const corsOptions = {
-    origin: "https://radiology-system.netlify.app", 
-    credentials: true, // Required for cookies/session
+    origin: function (origin, callback) {
+        if (!origin || ALLOWED_ORIGINS.includes(origin) || origin.endsWith(".netlify.app")) {
+            callback(null, true);
+        } else {
+            console.log("Blocked CORS origin:", origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true, 
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 };
 
-// ✅ FIX: Trust Proxy (Required for Render to handle cookies correctly)
+// ✅ FIX: Trust Proxy (Required for Render)
 app.set("trust proxy", 1);
 
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ FIX: Session Settings for Cross-Site (Netlify -> Render)
+// ✅ FIX: Session Settings for Cross-Site
 app.use(session({
     secret: process.env.SESSION_SECRET || "radai_secret_999",
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: true,        // REQUIRED: Must be true for Render (HTTPS)
-        sameSite: 'none',    // REQUIRED: Allows cookie flow from Netlify -> Render
-        maxAge: 24 * 60 * 60 * 1000 // 1 Day
+        secure: true,        // Required for Render (HTTPS)
+        sameSite: 'none',    // Required for Netlify -> Render
+        maxAge: 24 * 60 * 60 * 1000 
     },
 }));
 
@@ -66,10 +78,9 @@ io.on("connection", (socket) => {
 });
 
 // =========================
-// DATABASE & MODELS (Updated for New Features)
+// DATABASE & MODELS
 // =========================
 
-// Updated User Schema
 const UserSchema = new mongoose.Schema({
     name: String, 
     username: { type: String, required: true, unique: true },
@@ -80,7 +91,6 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.models.Account || mongoose.model("Account", UserSchema);
 
-// Updated Case Schema (With AI Data, Chat, Timeline Support)
 const CaseSchema = new mongoose.Schema({
     caseId: String,
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Account' },
@@ -90,13 +100,10 @@ const CaseSchema = new mongoose.Schema({
     images: { type: [String], default: [] },
     scanType: String,
     symptoms: String,
-    
-    // Auto-Triage Field
     priority: { type: String, enum: ['Safe', 'Medium', 'Critical'], default: 'Medium' },
     status: { type: String, default: 'Pending' },
     date: { type: Date, default: Date.now },
     
-    // Structured Data & Reports
     aiData: { 
         findings: String, 
         diagnosis: String, 
@@ -105,19 +112,16 @@ const CaseSchema = new mongoose.Schema({
     },
     radiologistNotes: String, 
     prescription: String,
-    
-    // Chat History
     chatHistory: { type: [{ role: String, message: String }], default: [] }
 });
 const Case = mongoose.models.Case || mongoose.model("Case", CaseSchema);
 
 // Connect DB
-// ✅ FIX: Removed deprecated options (useNewUrlParser) to clean up logs
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log("✅ MongoDB Connected"))
     .catch((err) => console.error("❌ MongoDB Error:", err));
 
-// --- ADMIN RESET (Your Original Logic) ---
+// --- ADMIN RESET ---
 (async () => {
   try {
     const adminExists = await User.findOne({ role: "admin" });
@@ -127,7 +131,6 @@ mongoose.connect(process.env.MONGO_URI)
             name: "System Admin", email: "admin@system.com",
             username: "admin", password: "123", role: "admin"
         });
-        // Create other default roles for testing
         await User.create({ name: "Dr. House", username: "doctor", password: "123", role: "doctor", email: "doc@rad.ai" });
         await User.create({ name: "Tech Sarah", username: "tech", password: "123", role: "technician", email: "tech@rad.ai" });
         await User.create({ name: "Rad. Jones", username: "radiologist", password: "123", role: "radiologist", email: "rad@rad.ai" });
@@ -150,7 +153,7 @@ cloudinary.config({
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- NEW: EMAIL HELPER ---
+// --- EMAIL HELPER ---
 async function sendEmail(to, subject, html) {
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
         console.log("⚠️ Email skipped (Missing Credentials)");
@@ -172,7 +175,6 @@ const requireLogin = (req, res, next) => {
 };
 
 const requireRole = (role) => (req, res, next) => {
-    // Enhanced to allow arrays or single string
     const roles = Array.isArray(role) ? role : [role];
     if (req.session.user && (roles.includes(req.session.user.role) || req.session.user.role === 'admin')) {
       next();
@@ -193,12 +195,10 @@ app.post("/auth/login", async (req, res) => {
     }
     req.session.user = { id: user._id, username: user.username, role: user.role, email: user.email };
     
-    // ✅ FIX: Explicit save to ensure cookie is set before response
     req.session.save((err) => {
         if(err) return res.status(500).json({success: false, message: "Session Error"});
         res.json({ success: true, user: req.session.user });
     });
-
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
@@ -218,35 +218,23 @@ app.get("/auth/me", (req, res) => {
 });
 
 // =========================
-// ROUTES: ADMIN (Your Original Logic Preserved)
+// ROUTES: ADMIN
 // =========================
 
 app.post("/admin/doctor", requireRole('admin'), async (req, res) => {
-  try {
-    await User.create({ ...req.body, role: "doctor" });
-    res.json({ success: true });
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  try { await User.create({ ...req.body, role: "doctor" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 app.post("/admin/technician", requireRole('admin'), async (req, res) => {
-  try {
-    await User.create({ ...req.body, role: "technician" });
-    res.json({ success: true });
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  try { await User.create({ ...req.body, role: "technician" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 app.post("/admin/radiologist", requireRole('admin'), async (req, res) => {
-  try {
-    await User.create({ ...req.body, role: "radiologist" });
-    res.json({ success: true });
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  try { await User.create({ ...req.body, role: "radiologist" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 app.post("/admin/patient", requireRole('admin'), async (req, res) => {
-  try {
-    await User.create({ ...req.body, role: "patient" });
-    res.json({ success: true });
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  try { await User.create({ ...req.body, role: "patient" }); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 app.get("/admin/lists", requireRole(['admin', 'doctor']), async (req, res) => {
@@ -258,7 +246,6 @@ app.get("/admin/lists", requireRole(['admin', 'doctor']), async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// Helper for users
 app.get("/admin/users/:role", requireRole(['admin', 'doctor']), async (req, res) => {
     try {
         const users = await User.find({ role: req.params.role }).select("name _id");
@@ -267,11 +254,7 @@ app.get("/admin/users/:role", requireRole(['admin', 'doctor']), async (req, res)
 });
 
 app.post("/admin/case", requireRole(['admin', 'doctor']), async (req, res) => {
-  try {
-    await Case.create(req.body);
-    io.emit("update-dashboard");
-    res.json({ success: true });
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  try { await Case.create(req.body); io.emit("update-dashboard"); res.json({ success: true }); } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
 app.get("/admin/cases", requireRole(['admin', 'radiologist', 'technician']), async (req, res) => {
@@ -282,53 +265,38 @@ app.get("/admin/cases", requireRole(['admin', 'radiologist', 'technician']), asy
 });
 
 app.delete("/admin/case/:id", requireRole(['admin', 'radiologist']), async (req, res) => {
-    try {
-        await Case.findByIdAndDelete(req.params.id);
-        io.emit("update-dashboard");
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
+    try { await Case.findByIdAndDelete(req.params.id); io.emit("update-dashboard"); res.json({ success: true }); } catch (e) { res.status(500).json({ success: false }); }
 });
 
 // =========================
-// ROUTES: DOCTOR (Enhanced)
+// ROUTES: DOCTOR
 // =========================
 
-// 1. Create Case Route
 app.post("/doctor/create-case", requireRole('doctor'), async (req, res) => {
     try {
         const { patientId, scanType, symptoms } = req.body;
         const newCase = new Case({
             caseId: "CASE-" + Math.floor(1000 + Math.random() * 9000),
-            patient: patientId,
-            doctor: req.session.user.id,
-            scanType, symptoms, status: "Pending"
+            patient: patientId, doctor: req.session.user.id, scanType, symptoms, status: "Pending"
         });
-        await newCase.save();
-        io.emit("update-dashboard");
-        res.json({ success: true });
+        await newCase.save(); io.emit("update-dashboard"); res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// 2. Prescribe & Email (New Feature)
 app.post("/doctor/prescribe/:caseId", requireRole('doctor'), async (req, res) => {
     try {
         const c = await Case.findById(req.params.caseId).populate('patient');
         c.prescription = req.body.prescription;
         c.status = "Completed";
         await c.save();
-        
-        // Send Email
         if(c.patient?.email) sendEmail(c.patient.email, "New Prescription - Rad AI", `Doctor has added a prescription: ${c.prescription}`);
-        
-        io.emit("update-dashboard");
-        res.json({ success: true });
+        io.emit("update-dashboard"); res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
 app.get("/doctor/cases/:doctorId", requireRole('doctor'), async (req, res) => {
   try {
-    const cases = await Case.find({ doctor: req.params.doctorId })
-      .populate("patient").populate("technician").sort({date:-1});
+    const cases = await Case.find({ doctor: req.params.doctorId }).populate("patient").populate("technician").sort({date:-1});
     res.json({ cases });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -360,48 +328,56 @@ app.post("/tech/upload-cloud/:caseId", requireRole("technician"), upload.array("
             if(result?.secure_url) urls.push(result.secure_url);
         } catch(e) { console.error("Upload error", e); }
       }
-
       c.images = [...(c.images || []), ...urls];
       c.status = "Scanned"; 
-      await c.save();
-      io.emit("update-dashboard");
+      await c.save(); io.emit("update-dashboard");
       return res.json({ success: true });
     } catch (err) { return res.status(500).json({ message: "Upload failed" }); }
 });
 
 // =========================
-// ROUTES: RADIOLOGIST (AI + Auto-Triage)
+// ROUTES: RADIOLOGIST (AI with GEMINI 2.0 + SAFETY SETTINGS)
 // =========================
 
-// 1. Manual Notes
 app.post("/radio/notes/:caseId", requireRole("radiologist"), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
     c.radiologistNotes = req.body.radiologistNotes || "";
-    await c.save();
-    io.emit("update-dashboard");
-    res.json({ success: true });
+    await c.save(); io.emit("update-dashboard"); res.json({ success: true });
   } catch (err) { res.status(500).json({ message: "Error" }); }
 });
 
-// 2. AI Analysis (Enhanced: Auto-Triage + JSON)
 app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
-    if (!c?.images?.length) return res.status(400).json({ message: "No images" });
+    if (!c?.images?.length) return res.status(400).json({ message: "No images found." });
 
-    const imageResp = await axios.get(c.images[0], { responseType: "arraybuffer" });
+    // 1. Download Image
+    let imageResp;
+    try {
+        imageResp = await axios.get(c.images[0], { responseType: "arraybuffer", timeout: 10000 });
+    } catch (axiosErr) {
+        return res.status(400).json({ message: "Failed to download image from Cloudinary." });
+    }
+
     const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
 
-    // Use Gemini 1.5 Flash (Fast + Accurate)
+    // ✅ FIX: Using Gemini 2.0 Flash (Matches your old file)
+    // ✅ FIX: Added Safety Settings to BLOCK_NONE (Required for X-Rays)
     const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash",
-        generationConfig: { responseMimeType: "application/json" } // STRICT JSON
+        model: "gemini-2.0-flash", 
+        generationConfig: { responseMimeType: "application/json" },
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ]
     });
 
-    const prompt = `Analyze this scan. 
+    const prompt = `Analyze this medical scan. 
     1. Check for Fractures, Tumors, Hemorrhage.
-    2. Set 'severity' to 'Critical' if life-threatening (Hemorrhage/Displaced Fracture), otherwise 'Medium' or 'Safe'.
+    2. Set 'severity' to 'Critical' if life-threatening, otherwise 'Medium' or 'Safe'.
     Return JSON: { "findings": "string", "diagnosis": "string", "severity": "Safe|Medium|Critical", "confidence": "string", "bodyPart": "string", "report": "string" }`;
 
     const result = await model.generateContent({
@@ -409,16 +385,16 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
     });
 
     const rawText = result.response.text();
-    // Safety Regex to extract JSON block
+    
+    // Parse JSON
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     let aiData;
     if (jsonMatch) {
-        try { aiData = JSON.parse(jsonMatch[0]); } catch(e) { throw new Error("JSON Parse Failed"); }
+        try { aiData = JSON.parse(jsonMatch[0]); } catch(e) { aiData = { findings: rawText, diagnosis: "Manual Review", severity: "Medium" }; }
     } else {
-        aiData = { findings: "Error parsing AI", diagnosis: "Manual Review", severity: "Medium", report: rawText };
+        aiData = { findings: rawText, diagnosis: "Manual Review", severity: "Medium" };
     }
 
-    // UPDATE DB (Auto-Triage)
     c.priority = aiData.severity || "Medium";
     c.aiData = aiData;
     c.radiologistNotes = aiData.report;
@@ -427,13 +403,14 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
 
     io.emit("update-dashboard");
     return res.json({ success: true, aiData });
+
   } catch (err) { 
     console.error("AI Error:", err);
-    return res.status(500).json({ message: "AI Analysis Failed" });
+    return res.status(500).json({ message: `AI Failed: ${err.message}` });
   }
 });
 
-// --- NEW: CHAT WITH SCAN ---
+// --- CHAT WITH SCAN (GEMINI 2.0) ---
 app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req, res) => {
     try {
         const { question } = req.body;
@@ -443,7 +420,9 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
         const imageResp = await axios.get(c.images[0], { responseType: "arraybuffer" });
         const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
         
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // ✅ FIX: Using Gemini 2.0 Flash
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+        
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: `Question: ${question}. Be clinical.` }, imagePart] }]
         });
@@ -451,25 +430,23 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
         const answer = result.response.text();
         c.chatHistory.push({ role: "user", message: question });
         c.chatHistory.push({ role: "ai", message: answer });
-        if(c.chatHistory.length > 20) c.chatHistory.shift(); // Limit history
+        if(c.chatHistory.length > 20) c.chatHistory.shift(); 
         await c.save();
         return res.json({ success: true, answer });
     } catch (e) { return res.status(500).json({ message: e.message }); }
 });
 
 // =========================
-// ROUTES: PATIENT (Enhanced)
+// ROUTES: PATIENT
 // =========================
 
 app.get("/patient/cases/:patientId", requireRole('patient'), async (req, res) => {
   try {
-    const cases = await Case.find({ patient: req.params.patientId })
-      .populate("doctor").populate("technician").sort({date:-1});
+    const cases = await Case.find({ patient: req.params.patientId }).populate("doctor").populate("technician").sort({date:-1});
     res.json({ cases });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// New: Medical Timeline
 app.get("/patient/history/:id", requireRole(['doctor', 'patient']), async (req, res) => {
     try {
         const cases = await Case.find({ patient: req.params.id }).select("date scanType priority").sort({date:-1});
@@ -477,48 +454,20 @@ app.get("/patient/history/:id", requireRole(['doctor', 'patient']), async (req, 
     } catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
-// New: PDF Report Download
 app.get("/patient/pdf/:caseId", requireRole(['patient', 'doctor', 'radiologist']), async (req, res) => {
     try {
         const c = await Case.findById(req.params.caseId).populate('patient doctor');
         if(!c) return res.status(404).send("Not Found");
-
         const doc = new PDFDocument();
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename=Report-${c.caseId}.pdf`);
         doc.pipe(res);
-        
-        doc.fontSize(20).text("Rad AI Medical Report", { align: 'center' });
-        doc.moveDown();
-        doc.fontSize(12).text(`Patient: ${c.patient?.name || 'N/A'}`);
-        doc.text(`Doctor: ${c.doctor?.name || 'N/A'}`);
+        doc.fontSize(20).text("Rad AI Medical Report", { align: 'center' }); doc.moveDown();
+        doc.fontSize(12).text(`Patient: ${c.patient?.name || 'N/A'}`); doc.text(`Doctor: ${c.doctor?.name || 'N/A'}`);
         doc.text(`Date: ${new Date(c.date).toDateString()}`);
-        doc.moveDown();
-        doc.fontSize(14).text("AI Findings:", { underline: true });
-        doc.fontSize(12).text(c.radiologistNotes || "Pending Analysis");
-        
-        if (c.images.length > 0) {
-            try {
-                const img = await axios.get(c.images[0], { responseType: 'arraybuffer' });
-                doc.image(Buffer.from(img.data), { width: 300, align: 'center' });
-            } catch(e) {}
-        }
-        
-        if(c.prescription) {
-            doc.moveDown();
-            doc.fontSize(14).text("Prescription:", { underline: true });
-            doc.text(c.prescription);
-        }
+        if(c.prescription) { doc.moveDown(); doc.fontSize(14).text("Prescription:", { underline: true }); doc.text(c.prescription); }
         doc.end();
     } catch (e) { res.status(500).send("PDF Error"); }
-});
-
-// Generic
-app.get("/case/:id", async (req, res) => {
-  try {
-    const singleCase = await Case.findById(req.params.id).populate("patient doctor technician");
-    res.json({ case: singleCase });
-  } catch (err) { res.status(404).json({ message: "Case not found" }); }
 });
 
 // =========================
@@ -527,9 +476,7 @@ app.get("/case/:id", async (req, res) => {
 
 app.get("/health", (_req, res) => res.json({ ok: true, now: new Date().toISOString() }));
 
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: "Route not found" });
-});
+app.use((req, res) => { res.status(404).json({ success: false, message: "Route not found" }); });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
