@@ -8,9 +8,9 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.3.1",
+    "@google/generative-ai": "^0.21.0",
     "@huggingface/inference": "^4.13.4",
-    "axios": "^1.13.2",
+    "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^1.41.3",
     "connect-redis": "^7.1.1",
@@ -25,12 +25,9 @@
     "nodemailer": "^6.9.13",
     "pdfkit": "^0.15.0",
     "redis": "^4.6.13",
-    "socket.io": "^4.8.1",
+    "socket.io": "^4.7.5",
     "streamifier": "^0.1.1",
-    "winston": "^3.13.0",
-    "winston-logstash": "^1.2.1",
-    "winston-logstash-transport": "^2.0.0",
-    "winston-transport": "^4.9.0"
+    "winston": "^3.13.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
