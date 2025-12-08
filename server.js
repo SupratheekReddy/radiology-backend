@@ -1,5 +1,5 @@
 // ================================================================
-// SERVER.JS — Final Version (Detailed AI + Treatment + Full View)
+// SERVER.JS — Final Version (Advanced AI + Delete + Prescriptions)
 // ================================================================
 
 require("dotenv").config();
@@ -103,14 +103,13 @@ const CaseSchema = new mongoose.Schema({
     status: { type: String, default: 'Pending' },
     date: { type: Date, default: Date.now },
     
-    // AI Data (Updated with Treatment)
+    // AI Data
     aiData: { 
         isMedical: { type: Boolean, default: true },
         findings: String, 
         diagnosis: String, 
         confidence: String, 
-        bodyPart: String,
-        treatment: String // ✅ ADDED THIS FIELD
+        bodyPart: String 
     },
     
     // Notes & Prescriptions
@@ -135,7 +134,6 @@ mongoose.connect(process.env.MONGO_URI)
             name: "System Admin", email: "admin@system.com",
             username: "admin", password: "123", role: "admin"
         });
-        // Create defaults
         await User.create({ name: "Dr. House", username: "doctor", password: "123", role: "doctor", email: "doc@rad.ai" });
         await User.create({ name: "Tech Sarah", username: "tech", password: "123", role: "technician", email: "tech@rad.ai" });
         await User.create({ name: "Rad. Jones", username: "radiologist", password: "123", role: "radiologist", email: "rad@rad.ai" });
@@ -211,20 +209,7 @@ app.get("/auth/me", (req, res) => {
 });
 
 // =========================
-// ROUTES: SHARED / GENERIC (Needed for Full View)
-// =========================
-
-// ✅ NEW: Get Single Case Details (Required for "Open Case Detail" View)
-app.get("/case/:id", async (req, res) => {
-    try {
-        const singleCase = await Case.findById(req.params.id).populate("patient doctor technician");
-        if(!singleCase) return res.status(404).json({ success: false, message: "Case not found" });
-        res.json({ success: true, case: singleCase });
-    } catch (err) { res.status(500).json({ message: "Server Error" }); }
-});
-
-// =========================
-// ROUTES: ADMIN
+// ROUTES: ADMIN (With DELETE)
 // =========================
 
 app.get("/admin/users/:role", requireRole(['admin', 'doctor']), async (req, res) => {
@@ -253,6 +238,7 @@ app.delete("/admin/case/:id", requireRole(['admin', 'radiologist']), async (req,
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// ... (Other Admin Routes like add doctor/tech/etc are generic and implicitly handled if you kept them, otherwise add them back if missing from your copy) ...
 app.post("/admin/doctor", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "doctor" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
 app.post("/admin/technician", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "technician" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
 app.post("/admin/radiologist", requireRole('admin'), async (req, res) => { try { await User.create({ ...req.body, role: "radiologist" }); res.json({ success: true }); } catch (e) { res.status(400).json({ message: e.message }); } });
@@ -329,9 +315,10 @@ app.post("/tech/upload-cloud/:caseId", requireRole("technician"), upload.array("
 });
 
 // =========================
-// ROUTES: RADIOLOGIST (AI + NOTES)
+// ROUTES: RADIOLOGIST (UPDATED AI + NOTES)
 // =========================
 
+// ✅ UPDATED: Appends notes with timestamp instead of overwriting
 app.post("/radio/notes/:caseId", requireRole("radiologist"), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
@@ -339,9 +326,10 @@ app.post("/radio/notes/:caseId", requireRole("radiologist"), async (req, res) =>
     const newNote = req.body.radiologistNotes;
     const timestamp = new Date().toLocaleString();
     
+    // Append to existing notes
     c.radiologistNotes = c.radiologistNotes 
-        ? `${c.radiologistNotes}\n\n[Note - ${timestamp}]: ${newNote}`
-        : `[Note - ${timestamp}]: ${newNote}`;
+        ? `${c.radiologistNotes}\n\n[Radiologist Note - ${timestamp}]: ${newNote}`
+        : `[Radiologist Note - ${timestamp}]: ${newNote}`;
 
     await c.save(); 
     io.emit("update-dashboard"); 
@@ -349,7 +337,7 @@ app.post("/radio/notes/:caseId", requireRole("radiologist"), async (req, res) =>
   } catch (err) { res.status(500).json({ message: "Error" }); }
 });
 
-// ✅ UPDATED: AI Analysis using Gemini 1.5 Flash
+// ✅ UPDATED: Advanced AI Logic (Checks Non-Medical + Detailed Report)
 app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
@@ -364,7 +352,6 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
 
     const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
 
-    // 👇 CHANGED: Using gemini-1.5-flash
     const model = genAI.getGenerativeModel({ 
         model: "gemini-2.0-flash", 
         generationConfig: { responseMimeType: "application/json" },
@@ -376,31 +363,29 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
         ]
     });
 
-    // 🔴 REFINED PROMPT: Detail + Treatment + Medical Check
+    // 🔴 ADVANCED PROMPT
     const prompt = `
     Role: Expert Radiologist.
     Task: Analyze this image.
 
     STEP 1: IDENTITY CHECK
     Is this a medical scan (X-Ray, MRI, CT, Ultrasound)?
-    - If NO (e.g., person, landscape, object): Return JSON with "isMedical": false.
+    - If NO (e.g., person, celebrity like Dhoni, landscape, object): Return JSON with "isMedical": false.
     - If YES: Proceed to Step 2.
 
     STEP 2: DETAILED ANALYSIS
     Provide a COMPREHENSIVE report.
     1. Anatomical Region.
-    2. Detailed Findings (Bone integrity, soft tissue, spacing, anomalies).
+    2. Detailed Observations (Bone integrity, soft tissue, spacing, anomalies).
     3. Diagnosis (Specific condition or "Normal").
-    4. TREATMENT: Suggest immediate next steps and possible medical treatments.
-    5. Severity (Safe / Medium / Critical).
+    4. Severity (Safe / Medium / Critical).
 
     Return JSON format:
     {
       "isMedical": true,
       "bodyPart": "String",
-      "findings": "String (Very detailed medical observation, at least 4 sentences)",
+      "findings": "String (Detailed medical observation, 3-4 sentences)",
       "diagnosis": "String",
-      "treatment": "String (Recommended next steps and treatments)",
       "severity": "Safe" | "Medium" | "Critical",
       "confidence": "String (e.g. 98%)",
       "report": "String (Full formatted report)"
@@ -422,16 +407,16 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
         else aiData = { isMedical: true, findings: rawText, diagnosis: "Manual Review", severity: "Medium" }; 
     }
 
+    // Handle Non-Medical Images
     if (aiData.isMedical === false) {
         aiData.findings = "Image is NOT related to medical radiology. Analysis aborted.";
         aiData.diagnosis = "Invalid Image";
-        aiData.treatment = "N/A";
         aiData.severity = "Safe";
+        aiData.bodyPart = "N/A";
         c.radiologistNotes = "⚠️ Invalid Image Uploaded (Non-Medical detected).";
     } else {
-        // Create a detailed note if empty
-        const detailedNote = `AI FINDINGS:\n${aiData.findings}\n\nSUGGESTED TREATMENT:\n${aiData.treatment || 'Consult Specialist'}`;
-        c.radiologistNotes = detailedNote;
+        // Save valid report
+        c.radiologistNotes = aiData.report || aiData.findings;
     }
 
     c.priority = aiData.severity || "Medium";
@@ -458,11 +443,10 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
         const imageResp = await axios.get(c.images[0], { responseType: "arraybuffer" });
         const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
         
-        // 👇 CHANGED: Using gemini-1.5-flash
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
         
         const result = await model.generateContent({
-            contents: [{ role: "user", parts: [{ text: `Question: ${question}. Be clinical.`, inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" }}] }]
+            contents: [{ role: "user", parts: [{ text: `Question: ${question}. Be clinical.` }, imagePart] }]
         });
         
         const answer = result.response.text();
@@ -504,6 +488,7 @@ app.get("/patient/pdf/:caseId", requireRole(['patient', 'doctor', 'radiologist']
         doc.fontSize(12).text(`Patient: ${c.patient?.name || 'N/A'}`); doc.text(`Doctor: ${c.doctor?.name || 'N/A'}`);
         doc.text(`Date: ${new Date(c.date).toDateString()}`);
         
+        // Add Radiologist Notes
         if(c.radiologistNotes) {
             doc.moveDown();
             doc.fontSize(14).text("Radiology Findings:", { underline: true });
