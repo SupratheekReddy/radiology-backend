@@ -349,7 +349,7 @@ app.post("/radio/notes/:caseId", requireRole("radiologist"), async (req, res) =>
   } catch (err) { res.status(500).json({ message: "Error" }); }
 });
 
-// ✅ UPDATED: AI Analysis now asks for TREATMENT & DETAIL
+// ✅ UPDATED: AI Analysis using Gemini 1.5 Flash
 app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), async (req, res) => {
   try {
     const c = await Case.findById(req.params.caseId);
@@ -364,8 +364,9 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
 
     const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
 
+    // 👇 CHANGED: Using gemini-1.5-flash
     const model = genAI.getGenerativeModel({ 
-        model: "models/gemini-1.0-pro-vision", 
+        model: "gemini-1.5-flash", 
         generationConfig: { responseMimeType: "application/json" },
         safetySettings: [
             { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -457,7 +458,8 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
         const imageResp = await axios.get(c.images[0], { responseType: "arraybuffer" });
         const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
         
-        const model = genAI.getGenerativeModel({ model: "models/gemini-1.0-pro-vision" });
+        // 👇 CHANGED: Using gemini-1.5-flash
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: `Question: ${question}. Be clinical.`, inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" }}] }]
