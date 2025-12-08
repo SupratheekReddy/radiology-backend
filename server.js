@@ -366,7 +366,7 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
 
     // 👇 CHANGED: Using gemini-1.5-flash
     const model = genAI.getGenerativeModel({ 
-        model: "gemini-1.5-flash", 
+        model: "gemini-2.0-flash", 
         generationConfig: { responseMimeType: "application/json" },
         safetySettings: [
             { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -459,7 +459,7 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
         const imagePart = { inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" } };
         
         // 👇 CHANGED: Using gemini-1.5-flash
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
         
         const result = await model.generateContent({
             contents: [{ role: "user", parts: [{ text: `Question: ${question}. Be clinical.`, inlineData: { data: Buffer.from(imageResp.data).toString("base64"), mimeType: "image/jpeg" }}] }]
