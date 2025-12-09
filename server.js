@@ -410,7 +410,7 @@ app.post("/radio/ai-analyze/:caseId", requireRole(['radiologist', 'admin']), asy
                 ],
             },
         ],
-        model: "llama-3.2-11b-vision-preview",
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
         temperature: 0.1,
         response_format: { type: "json_object" } // Force JSON Mode
     });
@@ -474,7 +474,7 @@ app.post("/ai/chat/:caseId", requireRole(['radiologist', 'doctor']), async (req,
                     ],
                 },
             ],
-            model: "llama-3.2-90b-vision-preview",
+            model: "meta-llama/llama-4-scout-17b-16e-instruct",
         });
         
         const answer = chatCompletion.choices[0].message.content;
